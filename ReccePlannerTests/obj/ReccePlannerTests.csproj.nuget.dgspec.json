@@ -1,0 +1,100 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\_Repos\\recceplanner\\ReccePlannerTests\\ReccePlannerTests.csproj": {}
+  },
+  "projects": {
+    "C:\\_Repos\\recceplanner\\ReccePlanner.csproj": {
+      "restore": {
+        "projectUniqueName": "C:\\_Repos\\recceplanner\\ReccePlanner.csproj",
+        "projectName": "ReccePlanner",
+        "projectPath": "C:\\_Repos\\recceplanner\\ReccePlanner.csproj",
+        "packagesPath": "C:\\Users\\ygles\\.nuget\\packages\\",
+        "projectStyle": "PackagesConfig",
+        "UsingMicrosoftNETSdk": false,
+        "configFilePaths": [
+          "C:\\Users\\ygles\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net48": {
+            "projectReferences": {}
+          }
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low"
+        },
+        "packagesConfigPath": "C:\\_Repos\\recceplanner\\packages.config"
+      },
+      "frameworks": {
+        "net48": {}
+      }
+    },
+    "C:\\_Repos\\recceplanner\\ReccePlannerTests\\ReccePlannerTests.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\_Repos\\recceplanner\\ReccePlannerTests\\ReccePlannerTests.csproj",
+        "projectName": "ReccePlannerTests",
+        "projectPath": "C:\\_Repos\\recceplanner\\ReccePlannerTests\\ReccePlannerTests.csproj",
+        "packagesPath": "C:\\Users\\ygles\\.nuget\\packages\\",
+        "outputPath": "C:\\_Repos\\recceplanner\\ReccePlannerTests\\obj\\",
+        "projectStyle": "PackageReference",
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\ygles\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net48"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "C:\\Program Files\\dotnet\\library-packs": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net48": {
+            "targetAlias": "net48",
+            "projectReferences": {
+              "C:\\_Repos\\recceplanner\\ReccePlanner.csproj": {
+                "projectPath": "C:\\_Repos\\recceplanner\\ReccePlanner.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net48": {
+          "targetAlias": "net48",
+          "dependencies": {
+            "MSTest": {
+              "target": "Package",
+              "version": "[4.0.1, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.103\\RuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
