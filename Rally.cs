@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -17,87 +17,103 @@ namespace ReccePlanner
         public Location House { get; } = new Location("House", "H");
         public List<Route> HouseTravelTimes { get; set; } = new List<Route>();
 
-        private static double routeAttempt = 1;
-
-        private static bool firstIteration = true;
+        // Opt 1: instance fields instead of static (fixes correctness bug)
+        private long routeAttempt;
+        private bool firstIteration;
+        private volatile int optimalRouteTime;
 
         private ConcurrentDictionary<string, List<Location>> optimalRoutes = new ConcurrentDictionary<string, List<Location>>();
-        private static int optimalRouteTime = int.MaxValue;
-
-        private ConcurrentDictionary<string, int> analyzedRoutes = new ConcurrentDictionary<string, int>();
-
         private Mutex optimalRouteMutex = new Mutex();
+
+        // Opt 2: O(1) travel time lookup
+        private Dictionary<(Location, Location), int> _travelTimeMap;
 
         public Rally()
         {
         }
 
-        private void GenerateCombinations(List<Location> remainingItems, List<Location> currentCombo)
+        // Opt 3: remainingCounts eliminates duplicate permutations; Opt 4: partialCost enables branch-and-bound
+        private void GenerateCombinations(
+            Dictionary<Location, int> remainingCounts,
+            List<Location> currentCombo,
+            int partialCost)
         {
-            if (remainingItems.Count == 0)
+            if (remainingCounts.Count == 0)
             {
-                EvaluateRoute(currentCombo);
+                // Leaf: route is complete — partialCost IS the total route cost
+                var routeDescription = GetRouteDescription(currentCombo);
+                Console.WriteLine(string.Format("Route possibility #{0}: {1} ==> {2}",
+                    Interlocked.Increment(ref routeAttempt), routeDescription, partialCost));
+
+                optimalRouteMutex.WaitOne();
+                try
+                {
+                    if (partialCost < optimalRouteTime)
+                    {
+                        optimalRoutes.Clear();
+                        optimalRoutes.TryAdd(routeDescription, new List<Location>(currentCombo));
+                        optimalRouteTime = partialCost;
+                    }
+                    else if (partialCost == optimalRouteTime)
+                    {
+                        optimalRoutes.TryAdd(routeDescription, new List<Location>(currentCombo));
+                    }
+                }
+                finally
+                {
+                    optimalRouteMutex.ReleaseMutex();
+                }
                 return;
             }
 
-            if(firstIteration)
+            if (firstIteration)
             {
+                // Spin up one thread per distinct stage key at depth 1
                 Console.WriteLine("Spinning up a thread per stage...");
                 firstIteration = false;
 
-                Parallel.For(0, remainingItems.Count, i =>
+                var stages = remainingCounts.Keys.ToList();
+                Parallel.For(0, stages.Count, i =>
                 {
-                    var newItem = remainingItems[i];
-                    var currentComboCopy = new List<Location>(currentCombo);
-                    currentComboCopy.Add(newItem);
+                    var stage = stages[i];
+                    var remainingCountsCopy = new Dictionary<Location, int>(remainingCounts);
+                    remainingCountsCopy[stage]--;
+                    if (remainingCountsCopy[stage] == 0)
+                        remainingCountsCopy.Remove(stage);
 
-                    var remainingItemsCopy = new List<Location>(remainingItems);
-                    remainingItemsCopy.RemoveAt(i);
-
-                    GenerateCombinations(remainingItemsCopy, currentComboCopy);
+                    // No step cost yet — currentCombo was empty (no predecessor)
+                    GenerateCombinations(remainingCountsCopy, new List<Location> { stage }, 0);
                 });
             }
             else
             {
-                for (int i = 0; i < remainingItems.Count; i++)
+                foreach (var stage in remainingCounts.Keys.ToList())
                 {
-                    var newItem = remainingItems[i];
-                    currentCombo.Add(newItem);
+                    // Opt 2: O(1) lookup; Opt 4: branch-and-bound prune
+                    if (!_travelTimeMap.TryGetValue((currentCombo.Last(), stage), out int stepCost))
+                    {
+                        Console.WriteLine($"ERROR - Route not found - from '{currentCombo.Last().Name}' to '{stage.Name}'");
+                        continue;
+                    }
+                    if (partialCost + stepCost > optimalRouteTime)
+                        continue; // prune — can't beat or tie the best known
 
-                    var remainingItemsCopy = new List<Location>(remainingItems);
-                    remainingItemsCopy.RemoveAt(i);
+                    // Backtrack: decrement count (remove key if exhausted), recurse, restore
+                    remainingCounts[stage]--;
+                    bool removed = remainingCounts[stage] == 0;
+                    if (removed)
+                        remainingCounts.Remove(stage);
+                    currentCombo.Add(stage);
 
-                    GenerateCombinations(remainingItemsCopy, currentCombo);
+                    GenerateCombinations(remainingCounts, currentCombo, partialCost + stepCost);
 
                     currentCombo.RemoveAt(currentCombo.Count - 1);
+                    if (removed)
+                        remainingCounts[stage] = 1;
+                    else
+                        remainingCounts[stage]++;
                 }
             }
-        }
-
-        private int GetRouteTime(List<Location> route)
-        {
-            int routeTime = 0;
-
-            for (int i = 0; i < route.Count - 1 && routeTime < int.MaxValue; i++)
-            {
-                var source = route[i];
-                var target = route[i + 1];
-                var routeTimeObj = TravelTimes.FirstOrDefault(r => r.Source == source && r.Target == target);
-                if (routeTimeObj != null)
-                {
-                    routeTime += (int)routeTimeObj.Time;
-                }
-                else
-                {
-                    Console.WriteLine(String.Format("ERROR - Route not found - from '{0}' to '{1}'", source.Name, target.Name));
-                    routeTime = int.MaxValue;
-                }
-            }
-
-            // Add the time to get back to the house from the last stage. Exclude for now since we begin and end potentially outside of the recce window
-            // routeTime += HouseTravelTimes.FirstOrDefault(r => r.Target == route.Last()).Time;
-
-            return routeTime;
         }
 
         private string GetRouteDescription(List<Location> route)
@@ -114,55 +130,25 @@ namespace ReccePlanner
             return routeDetail;
         }
 
-        private void EvaluateRoute(List<Location> route)
-        {
-            var routeDescription = GetRouteDescription(route);
-            if (!analyzedRoutes.ContainsKey(routeDescription))
-            {
-                var routeTime = GetRouteTime(route);
-
-                analyzedRoutes.TryAdd(routeDescription, routeTime);
-
-                Console.WriteLine(String.Format("Route possibility #{0}: {1} ==> {2}", routeAttempt, routeDescription, routeTime));
-
-                optimalRouteMutex.WaitOne();
-
-                if (routeTime < optimalRouteTime)
-                {
-                    optimalRoutes.Clear();
-                    optimalRoutes.TryAdd(routeDescription, route);
-                    optimalRouteTime = routeTime;
-                }
-                else if (routeTime == optimalRouteTime)
-                {
-                    if (!optimalRoutes.ContainsKey(routeDescription))
-                    {
-                        optimalRoutes.TryAdd(routeDescription, route);
-                    }
-                }
-
-                optimalRouteMutex.ReleaseMutex();
-            }
-            routeAttempt++;
-        }
-
         public void FindOptimalRecce()
         {
-
             Console.WriteLine("Initializing routes & locations...");
 
-            // Duplicate the stages to get combinations for 2 passes
-            List<Location> recceLocations = new List<Location>();
-            foreach (var loc in Locations)
-            {
-                recceLocations.Add(loc);
-                recceLocations.Add(loc);
-            }
+            // Opt 1: reset instance fields on each call (safe for re-use)
+            routeAttempt = 0;
+            firstIteration = true;
+            optimalRouteTime = int.MaxValue;
+            optimalRoutes.Clear();
+
+            // Opt 2: build O(1) lookup map once
+            _travelTimeMap = TravelTimes.ToDictionary(r => (r.Source, r.Target), r => r.Time);
+
+            // Opt 3: visit-count map replaces flat duplicated list
+            var remainingCounts = Locations.ToDictionary(l => l, l => 2);
 
             Console.WriteLine("Finding optimal route from all possibilities...\r");
 
-            routeAttempt = 1;
-            GenerateCombinations(recceLocations, new List<Location>());
+            GenerateCombinations(remainingCounts, new List<Location>(), 0);
 
             Console.WriteLine("\n\nNumber of optimal possible routes found: " + optimalRoutes.Count);
 
@@ -172,10 +158,9 @@ namespace ReccePlanner
                 Console.WriteLine("Optimal route #" + routeIndex + ": " + route);
                 routeIndex++;
             }
-            Console.WriteLine(String.Format("Optimal routes time: {0}", optimalRouteTime));
+            Console.WriteLine(string.Format("Optimal routes time: {0}", optimalRouteTime));
 
             Console.ReadLine();
-
         }
     }
 
