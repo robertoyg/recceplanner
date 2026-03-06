@@ -262,16 +262,16 @@ namespace ReccePlannerTests
         }
 
         [TestMethod]
-        public void ParseFromFile_OlympusSampleFile_LoadsSixStagesAndThirtySixRoutes()
+        public void ParseFromFile_TemplateSampleFile_LoadsThreeStagesAndNineRoutes()
         {
-            var olympusPath = Path.Combine(
+            var templatePath = Path.Combine(
                 Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                "..", "..", "..", "..", "olympus.md");
+                "..", "..", "..", "..", "template.md");
 
-            if (!File.Exists(olympusPath))
-                Assert.Inconclusive("olympus.md not found at expected path: " + olympusPath);
+            if (!File.Exists(templatePath))
+                Assert.Inconclusive("template.md not found at expected path: " + templatePath);
 
-            var rally = RallyParser.ParseFromFile(olympusPath);
+            var rally = RallyParser.ParseFromFile(templatePath);
 
             Assert.AreEqual(3, rally.Locations.Count);
             Assert.AreEqual(9, rally.TravelTimes.Count); // 3x3 matrix
