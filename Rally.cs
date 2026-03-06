@@ -25,6 +25,11 @@ namespace ReccePlanner
         private ConcurrentDictionary<string, List<Location>> optimalRoutes = new ConcurrentDictionary<string, List<Location>>();
         private Mutex optimalRouteMutex = new Mutex();
 
+        // Testability hooks (InternalsVisibleTo ReccePlannerTests)
+        internal bool WaitForInput { get; set; } = true;
+        internal int OptimalRouteTime => optimalRouteTime;
+        internal ConcurrentDictionary<string, List<Location>> OptimalRoutes => optimalRoutes;
+
         // Opt 2: O(1) travel time lookup
         private Dictionary<(Location, Location), int> _travelTimeMap;
 
@@ -42,8 +47,7 @@ namespace ReccePlanner
             {
                 // Leaf: route is complete — partialCost IS the total route cost
                 var routeDescription = GetRouteDescription(currentCombo);
-                Console.WriteLine(string.Format("Route possibility #{0}: {1} ==> {2}",
-                    Interlocked.Increment(ref routeAttempt), routeDescription, partialCost));
+                Console.WriteLine(string.Format("Route possibility #{0}: {1} ==> {2}", Interlocked.Increment(ref routeAttempt), routeDescription, partialCost));
 
                 optimalRouteMutex.WaitOne();
                 try
@@ -160,7 +164,8 @@ namespace ReccePlanner
             }
             Console.WriteLine(string.Format("Optimal routes time: {0}", optimalRouteTime));
 
-            Console.ReadLine();
+            if (WaitForInput)
+                Console.ReadLine();
         }
     }
 
