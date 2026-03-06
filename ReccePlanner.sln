@@ -5,6 +5,8 @@ VisualStudioVersion = 17.8.34408.163
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReccePlanner", "ReccePlanner.csproj", "{3A50203A-7CE1-4EAD-B6D1-1F042DE69A10}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ReccePlannerTests", "ReccePlannerTests\ReccePlannerTests.csproj", "{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,14 @@ Global
 		{3A50203A-7CE1-4EAD-B6D1-1F042DE69A10}.Release|Any CPU.Build.0 = Release|Any CPU
 		{3A50203A-7CE1-4EAD-B6D1-1F042DE69A10}.Release|x64.ActiveCfg = Release|x64
 		{3A50203A-7CE1-4EAD-B6D1-1F042DE69A10}.Release|x64.Build.0 = Release|x64
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Debug|x64.Build.0 = Debug|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Release|x64.ActiveCfg = Release|Any CPU
+		{D7E5F123-4A8B-4C9D-B6E2-1F3A5C7D9E01}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
