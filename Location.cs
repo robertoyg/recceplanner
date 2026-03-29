@@ -12,7 +12,7 @@ namespace ReccePlanner
 
         public string Name { get; set; }
 
-        public byte Key { get; set; }
+        public double DistanceMiles { get; set; }
 
         public Location(string name, string code)
         {

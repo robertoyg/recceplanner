@@ -2,9 +2,11 @@
 
 ## Config
 
-| Parameter         | Value |
-|-------------------|-------|
-| Stage recce speed | 30    |
+| Parameter                  | Value   |
+|----------------------------|---------|
+| Stage recce speed pass 1   | 25      |
+| Stage recce speed pass 2   | 30      |
+| Start time first stage     | 7:00 am |
 
 ## Stages
 

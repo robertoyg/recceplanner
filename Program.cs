@@ -9,14 +9,14 @@ namespace ReccePlanner
         {
             string filePath;
 
-            if (args.Length > 0 && File.Exists(args[0]))
+            if (args.Length > 0 && File.Exists(args[0].Trim('"')))
             {
-                filePath = args[0];
+                filePath = args[0].Trim('"');
             }
             else
             {
                 Console.Write("Enter path to rally markdown file: ");
-                filePath = (Console.ReadLine() ?? string.Empty).Trim();
+                filePath = (Console.ReadLine() ?? string.Empty).Trim().Trim('"');
 
                 if (!File.Exists(filePath))
                 {
@@ -27,7 +27,8 @@ namespace ReccePlanner
 
             Console.WriteLine("Loading rally from: " + filePath);
             var rally = RallyParser.ParseFromFile(filePath);
-            Console.WriteLine($"Config loaded. Stage recce speed: {rally.Config.StageRecceSpeedMph} mph");
+            rally.InputFilePath = filePath;
+            Console.WriteLine($"Config loaded. Stage recce speed: pass 1 = {rally.Config.StageRecceSpeedPassOneMph} mph, pass 2 = {rally.Config.StageRecceSpeedPassTwoMph} mph");
             rally.FindOptimalRecce();
         }
     }

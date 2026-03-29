@@ -1,10 +1,8 @@
 using System;
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
+using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -12,12 +10,10 @@ namespace ReccePlanner
 {
     internal class Rally
     {
+        public string Name { get; set; } = "Rally";
         public RallyConfig Config { get; set; } = new RallyConfig();
         public List<Location> Locations { get; set; } = new List<Location>();
         public List<Route> TravelTimes { get; set; } = new List<Route>();
-        public Location House { get; } = new Location("House", "H");
-        public List<Route> HouseTravelTimes { get; set; } = new List<Route>();
-
         // Opt 1: instance fields instead of static (fixes correctness bug)
         private long routeAttempt;
         private bool firstIteration;
@@ -28,6 +24,7 @@ namespace ReccePlanner
 
         // Testability hooks (InternalsVisibleTo ReccePlannerTests)
         internal bool WaitForInput { get; set; } = true;
+        public string InputFilePath { get; set; }
         internal int OptimalRouteTime => optimalRouteTime;
         internal ConcurrentDictionary<string, List<Location>> OptimalRoutes => optimalRoutes;
 
@@ -123,16 +120,7 @@ namespace ReccePlanner
 
         private string GetRouteDescription(List<Location> route)
         {
-            string routeDetail = "";
-            foreach (var location in route)
-            {
-                routeDetail += location.Code + "-";
-            }
-            if (routeDetail.Length > 0)
-            {
-                routeDetail = routeDetail.Substring(0, routeDetail.Length - 1);
-            }
-            return routeDetail;
+            return string.Join("-", route.Select(l => l.Code));
         }
 
         public void FindOptimalRecce()
@@ -157,17 +145,106 @@ namespace ReccePlanner
 
             Console.WriteLine("\n\nNumber of optimal possible routes found: " + optimalRoutes.Count);
 
-            int routeIndex = 1;
-            foreach (var route in optimalRoutes.Keys)
-            {
-                Console.WriteLine("Optimal route #" + routeIndex + ": " + route);
-                routeIndex++;
-            }
-            Console.WriteLine(string.Format("Optimal routes time: {0}", optimalRouteTime));
+            var routeSnapshot = optimalRoutes.ToList();
+            for (int i = 0; i < routeSnapshot.Count; i++)
+                Console.WriteLine($"Optimal route #{i + 1}: {routeSnapshot[i].Key}");
+            Console.WriteLine($"Optimal routes time: {optimalRouteTime} minutes");
 
             if (WaitForInput)
+            {
+                List<Location> selectedRoute;
+                if (routeSnapshot.Count == 1)
+                {
+                    selectedRoute = routeSnapshot[0].Value;
+                }
+                else
+                {
+                    Console.Write($"\nEnter route number to use for plan (1-{routeSnapshot.Count}): ");
+                    if (!int.TryParse((Console.ReadLine() ?? "").Trim(), out int choice) || choice < 1 || choice > routeSnapshot.Count)
+                    {
+                        Console.WriteLine("Invalid selection, using route #1.");
+                        choice = 1;
+                    }
+                    selectedRoute = routeSnapshot[choice - 1].Value;
+                }
+
+                Console.Write("\nWould you like to generate a recce plan? (yes/no): ");
+                var answer = (Console.ReadLine() ?? string.Empty).Trim().ToLowerInvariant();
+                if (answer == "yes" || answer == "y")
+                    GenerateReccePlan(selectedRoute);
+
+                Console.WriteLine("Press Enter to exit...");
                 Console.ReadLine();
+            }
+        }
+
+        internal void GenerateReccePlan(List<Location> route, string outputPath = null)
+        {
+            if (!Config.StartTimeFirstStage.HasValue)
+            {
+                Console.WriteLine("Cannot generate plan: 'Start time first stage' is not set in the config section of the input file.");
+                return;
+            }
+
+            var lines = new List<string>();
+
+            lines.Add($"# {Name} Recce Plan");
+            lines.Add("");
+            lines.Add("## Assumptions");
+            lines.Add("| Assumption                    | Value |");
+            lines.Add("|-------------------------------|-------|");
+            lines.Add($"| Stage recce speed pass 1      | {Config.StageRecceSpeedPassOneMph} mph |");
+            lines.Add($"| Stage recce speed pass 2      | {Config.StageRecceSpeedPassTwoMph} mph |");
+            lines.Add($"| Start time first stage        | {FormatTime(Config.StartTimeFirstStage.Value)} |");
+            lines.Add("");
+            lines.Add("## Recce Plan");
+            lines.Add("| Start Time | Stage or Transit | Pass # | End Time |");
+            lines.Add("|------------|------------------|--------|----------|");
+
+            var currentTime = Config.StartTimeFirstStage.Value;
+            var passCounts = new Dictionary<Location, int>();
+
+            for (int i = 0; i < route.Count; i++)
+            {
+                var location = route[i];
+
+                if (!passCounts.ContainsKey(location))
+                    passCounts[location] = 0;
+                passCounts[location]++;
+                int pass = passCounts[location];
+
+                double speed = pass == 1 ? Config.StageRecceSpeedPassOneMph : Config.StageRecceSpeedPassTwoMph;
+                double durationMinutes = Math.Ceiling((location.DistanceMiles / speed) * 60.0);
+                var stageEnd = currentTime.Add(TimeSpan.FromMinutes(durationMinutes));
+
+                lines.Add($"| {FormatTime(currentTime)} | {location.Name} | {pass} | {FormatTime(stageEnd)} |");
+                currentTime = stageEnd;
+
+                if (i < route.Count - 1)
+                {
+                    var next = route[i + 1];
+                    if (_travelTimeMap.TryGetValue((location, next), out int transitMinutes))
+                    {
+                        var transitEnd = currentTime.Add(TimeSpan.FromMinutes(transitMinutes));
+                        lines.Add($"| {FormatTime(currentTime)} | Transit from {location.Name} to {next.Name} | | {FormatTime(transitEnd)} |");
+                        currentTime = transitEnd;
+                    }
+                }
+            }
+
+            outputPath = outputPath ?? (InputFilePath != null
+                ? Path.Combine(
+                    Path.GetDirectoryName(InputFilePath),
+                    Path.GetFileNameWithoutExtension(InputFilePath) + "-plan.md")
+                : "recce-plan.md");
+
+            File.WriteAllLines(outputPath, lines);
+            Console.WriteLine("Recce plan saved to: " + outputPath);
+        }
+
+        private static string FormatTime(TimeSpan time)
+        {
+            return DateTime.Today.Add(time).ToString("h:mm tt").ToLower();
         }
     }
-
 }
