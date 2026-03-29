@@ -9,6 +9,8 @@ namespace ReccePlanner
     {
         public static Rally ParseFromFile(string filePath)
         {
+            filePath = filePath.Trim().Trim('"');
+
             if (!File.Exists(filePath))
                 throw new FileNotFoundException("Rally file not found: " + filePath);
 
@@ -23,7 +25,8 @@ namespace ReccePlanner
 
             string section = null;
             string[] columnCodes = null;
-            bool stageRecceSpeedSet = false;
+            bool stageRecceSpeedPassOneSet = false;
+            bool stageRecceSpeedPassTwoSet = false;
 
             foreach (var rawLine in lines)
             {
@@ -32,9 +35,12 @@ namespace ReccePlanner
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
 
-                // Top-level heading (rally name) - skip
+                // Top-level heading (rally name)
                 if (line.StartsWith("# ") && !line.StartsWith("## "))
+                {
+                    rally.Name = line.Substring(2).Trim();
                     continue;
+                }
 
                 // Section heading
                 if (line.StartsWith("## "))
@@ -66,12 +72,25 @@ namespace ReccePlanner
                     var parameter = cells[0].ToLowerInvariant();
                     var value = cells[1];
 
-                    if (parameter == "stage recce speed")
+                    if (parameter == "stage recce speed pass 1")
                     {
                         if (!double.TryParse(value, out var speed))
-                            throw new FormatException($"Invalid value for 'Stage recce speed': '{value}'. Expected a number.");
-                        rally.Config.StageRecceSpeedMph = speed;
-                        stageRecceSpeedSet = true;
+                            throw new FormatException($"Invalid value for 'Stage recce speed pass 1': '{value}'. Expected a number.");
+                        rally.Config.StageRecceSpeedPassOneMph = speed;
+                        stageRecceSpeedPassOneSet = true;
+                    }
+                    else if (parameter == "stage recce speed pass 2")
+                    {
+                        if (!double.TryParse(value, out var speed))
+                            throw new FormatException($"Invalid value for 'Stage recce speed pass 2': '{value}'. Expected a number.");
+                        rally.Config.StageRecceSpeedPassTwoMph = speed;
+                        stageRecceSpeedPassTwoSet = true;
+                    }
+                    else if (parameter == "start time first stage")
+                    {
+                        if (!DateTime.TryParse(value, out var dt))
+                            throw new FormatException($"Invalid value for 'Start time first stage': '{value}'. Expected a time like '7:00 am'.");
+                        rally.Config.StartTimeFirstStage = dt.TimeOfDay;
                     }
                     else
                     {
@@ -89,6 +108,8 @@ namespace ReccePlanner
                     var code = cells[0];
                     var name = cells[1];
                     var location = new Location(name, code);
+                    if (cells.Length >= 3 && double.TryParse(cells[2], out var distance))
+                        location.DistanceMiles = distance;
                     locations[code] = location;
                     rally.Locations.Add(location);
                 }
@@ -129,8 +150,10 @@ namespace ReccePlanner
                 }
             }
 
-            if (!stageRecceSpeedSet)
-                throw new InvalidOperationException("Required config parameter 'Stage recce speed' is missing.");
+            if (!stageRecceSpeedPassOneSet)
+                throw new InvalidOperationException("Required config parameter 'Stage recce speed pass 1' is missing.");
+            if (!stageRecceSpeedPassTwoSet)
+                throw new InvalidOperationException("Required config parameter 'Stage recce speed pass 2' is missing.");
 
             return rally;
         }

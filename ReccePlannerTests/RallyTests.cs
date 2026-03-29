@@ -246,5 +246,240 @@ namespace ReccePlannerTests
             Assert.AreEqual(8, rally.OptimalRoutes.Count);
             Assert.IsTrue(rally.OptimalRoutes.ContainsKey(CyclicRoute(8, 0))); // A-B-C-D-E-F-G-H-A-B-C-D-E-F-G-H
         }
+
+        // -----------------------------------------------------------------
+        // Plan generation
+        // -----------------------------------------------------------------
+
+        // Two stages: Alpha (6 mi) and Beta (9 mi) at 30 mph.
+        // Stage durations: Alpha = 12 min, Beta = 18 min.
+        // Travel times: Alpha→Beta = 1 min, Beta→Alpha = 2 min, self-loops = 100.
+        // This makes A-B-A-B the unique optimal route (cost = 1+2+1 = 4).
+        // Route A-B-A-B starting at 7:00 am:
+        //   7:00 am → Stage Alpha pass 1 → 7:12 am
+        //   7:12 am → Transit A→B (1)    → 7:13 am
+        //   7:13 am → Stage Beta  pass 1 → 7:31 am
+        //   7:31 am → Transit B→A (2)    → 7:33 am
+        //   7:33 am → Stage Alpha pass 2 → 7:45 am
+        //   7:45 am → Transit A→B (1)    → 7:46 am
+        //   7:46 am → Stage Beta  pass 2 → 8:04 am
+        private static Rally BuildPlanTestRally()
+        {
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 30;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+            rally.Config.StartTimeFirstStage = new TimeSpan(7, 0, 0);
+
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0 };
+            var locB = new Location("Stage Beta", "B") { DistanceMiles = 9.0 };
+            rally.Locations.AddRange(new[] { locA, locB });
+            rally.TravelTimes.AddRange(new[]
+            {
+                new Route(locA, locA, 100),
+                new Route(locA, locB, 1),
+                new Route(locB, locA, 2),
+                new Route(locB, locB, 100),
+            });
+            return rally;
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_WritesCorrectStageTimes()
+        {
+            var rally = BuildPlanTestRally();
+            RunSilently(rally); // builds _travelTimeMap
+
+            // A-B-A-B is the unique optimal route for this graph
+            var route = rally.OptimalRoutes["A-B-A-B"];
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(route, outputPath);
+                var content = File.ReadAllText(outputPath);
+
+                // Stage Alpha pass 1: 7:00 am → 7:12 am
+                StringAssert.Contains(content, "7:00 am");
+                StringAssert.Contains(content, "Stage Alpha");
+                StringAssert.Contains(content, "7:12 am");
+
+                // Stage Beta pass 1: 7:13 am → 7:31 am
+                StringAssert.Contains(content, "7:13 am");
+                StringAssert.Contains(content, "Stage Beta");
+                StringAssert.Contains(content, "7:31 am");
+
+                // Stage Alpha pass 2: 7:33 am → 7:45 am
+                StringAssert.Contains(content, "7:33 am");
+                StringAssert.Contains(content, "7:45 am");
+
+                // Stage Beta pass 2: 7:46 am → 8:04 am
+                StringAssert.Contains(content, "7:46 am");
+                StringAssert.Contains(content, "8:04 am");
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_WritesCorrectTransitLines()
+        {
+            var rally = BuildPlanTestRally();
+            RunSilently(rally);
+
+            var route = rally.OptimalRoutes["A-B-A-B"];
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(route, outputPath);
+                var content = File.ReadAllText(outputPath);
+
+                StringAssert.Contains(content, "Transit from Stage Alpha to Stage Beta");
+                StringAssert.Contains(content, "Transit from Stage Beta to Stage Alpha");
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_WritesCorrectPassNumbers()
+        {
+            var rally = BuildPlanTestRally();
+            RunSilently(rally);
+
+            var route = rally.OptimalRoutes["A-B-A-B"];
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(route, outputPath);
+                var lines = File.ReadAllLines(outputPath);
+
+                var stageLines = lines.Where(l => l.Contains("Stage Alpha") || l.Contains("Stage Beta"))
+                                      .Where(l => !l.Contains("Transit"))
+                                      .ToArray();
+                Assert.AreEqual(4, stageLines.Length);
+                // Pass numbers appear in order: 1, 1, 2, 2
+                StringAssert.Contains(stageLines[0], "| 1 |");
+                StringAssert.Contains(stageLines[1], "| 1 |");
+                StringAssert.Contains(stageLines[2], "| 2 |");
+                StringAssert.Contains(stageLines[3], "| 2 |");
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_NoStartTime_DoesNotWriteFile()
+        {
+            var rally = BuildPlanTestRally();
+            rally.Config.StartTimeFirstStage = null;
+            RunSilently(rally);
+
+            var outputPath = Path.GetTempFileName();
+            File.Delete(outputPath); // ensure it doesn't exist before the call
+            try
+            {
+                var prev = Console.Out;
+                Console.SetOut(TextWriter.Null);
+                try { rally.GenerateReccePlan(rally.OptimalRoutes["A-B-A-B"], outputPath); }
+                finally { Console.SetOut(prev); }
+
+                Assert.IsFalse(File.Exists(outputPath), "No file should be written when start time is missing.");
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_UsesRallyNameInHeading()
+        {
+            var rally = BuildPlanTestRally();
+            rally.Name = "Olympus Rally";
+            RunSilently(rally);
+
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(rally.OptimalRoutes["A-B-A-B"], outputPath);
+                var content = File.ReadAllText(outputPath);
+                StringAssert.Contains(content, "# Olympus Rally Recce Plan");
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_DifferentPassSpeeds_ProduceDifferentDurations()
+        {
+            // Stage distance 6.0 mi: pass 1 at 60 mph = 6 min, pass 2 at 30 mph = 12 min.
+            // Route A-A starting at 7:00 am:
+            //   7:00 am → Stage Alpha pass 1 → 7:06 am  (60 mph)
+            //   7:06 am → Transit A→A (5 min) → 7:11 am
+            //   7:11 am → Stage Alpha pass 2 → 7:23 am  (30 mph)
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 60;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+            rally.Config.StartTimeFirstStage = new TimeSpan(7, 0, 0);
+
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0 };
+            rally.Locations.Add(locA);
+            rally.TravelTimes.Add(new Route(locA, locA, 5));
+
+            RunSilently(rally);
+
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(rally.OptimalRoutes["A-A"], outputPath);
+                var content = File.ReadAllText(outputPath);
+
+                StringAssert.Contains(content, "7:06 am"); // end of pass 1
+                StringAssert.Contains(content, "7:23 am"); // end of pass 2
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_StageDurationRoundedUp()
+        {
+            // Stage distance 6.1 mi at 30 mph = 12.2 min → ceiled to 13 min.
+            // Start 7:00 am → end should be 7:13 am, not 7:12 am.
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 30;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+            rally.Config.StartTimeFirstStage = new TimeSpan(7, 0, 0);
+
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.1 };
+            rally.Locations.Add(locA);
+            rally.TravelTimes.Add(new Route(locA, locA, 5));
+
+            RunSilently(rally);
+
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(rally.OptimalRoutes["A-A"], outputPath);
+                var content = File.ReadAllText(outputPath);
+
+                // 7:00 am + ceil(12.2) = 7:00 am + 13 min = 7:13 am
+                StringAssert.Contains(content, "7:13 am");
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
     }
 }
