@@ -27,6 +27,7 @@ namespace ReccePlanner
 
             Console.WriteLine("Loading rally from: " + filePath);
             var rally = RallyParser.ParseFromFile(filePath);
+            Console.WriteLine($"Config loaded. Stage recce speed: {rally.Config.StageRecceSpeedMph} mph");
             rally.FindOptimalRecce();
         }
     }

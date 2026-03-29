@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Linq;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -8,6 +9,15 @@ namespace ReccePlannerTests
     [TestClass]
     public class RallyParserTests
     {
+        private const string ConfigSection =
+@"## Config
+
+| Parameter         | Value |
+|-------------------|-------|
+| Stage recce speed | 30    |
+
+";
+
         private string WriteTempFile(string content)
         {
             var path = Path.GetTempFileName();
@@ -29,9 +39,7 @@ namespace ReccePlannerTests
         [TestMethod]
         public void ParseFromFile_ValidStages_LoadsCorrectLocations()
         {
-            var md = @"# Test Rally
-
-## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name |
 |------|------|
@@ -65,7 +73,7 @@ namespace ReccePlannerTests
         [TestMethod]
         public void ParseFromFile_ValidTravelTimes_LoadsCorrectRoutes()
         {
-            var md = @"## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name |
 |------|------|
@@ -103,7 +111,7 @@ namespace ReccePlannerTests
         [TestMethod]
         public void ParseFromFile_StageHeaderRowNotParsedAsStage()
         {
-            var md = @"## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name |
 |------|------|
@@ -130,7 +138,7 @@ namespace ReccePlannerTests
         [TestMethod]
         public void ParseFromFile_UnknownStageCodeInMatrixColumn_SkipsRoute()
         {
-            var md = @"## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name |
 |------|------|
@@ -159,7 +167,7 @@ namespace ReccePlannerTests
         [TestMethod]
         public void ParseFromFile_UnknownStageCodeInMatrixRow_SkipsRow()
         {
-            var md = @"## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name |
 |------|------|
@@ -188,7 +196,7 @@ namespace ReccePlannerTests
         [TestMethod]
         public void ParseFromFile_InvalidTravelTimeValue_SkipsEntry()
         {
-            var md = @"## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name |
 |------|------|
@@ -216,25 +224,9 @@ namespace ReccePlannerTests
         }
 
         [TestMethod]
-        public void ParseFromFile_EmptyFile_ReturnsEmptyRally()
-        {
-            var path = WriteTempFile(string.Empty);
-            try
-            {
-                var rally = RallyParser.ParseFromFile(path);
-                Assert.AreEqual(0, rally.Locations.Count);
-                Assert.AreEqual(0, rally.TravelTimes.Count);
-            }
-            finally
-            {
-                File.Delete(path);
-            }
-        }
-
-        [TestMethod]
         public void ParseFromFile_WhitespacePaddedCells_TrimmedCorrectly()
         {
-            var md = @"## Stages
+            var md = ConfigSection + @"## Stages
 
 | Code | Name          |
 |------|---------------|
@@ -266,15 +258,177 @@ namespace ReccePlannerTests
         {
             var templatePath = Path.Combine(
                 Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                "..", "..", "..", "..", "template.md");
+                "..", "..", "..", "..", "Input-template.md");
 
             if (!File.Exists(templatePath))
-                Assert.Inconclusive("template.md not found at expected path: " + templatePath);
+                Assert.Inconclusive("Input-template.md not found at expected path: " + templatePath);
 
             var rally = RallyParser.ParseFromFile(templatePath);
 
             Assert.AreEqual(3, rally.Locations.Count);
             Assert.AreEqual(9, rally.TravelTimes.Count); // 3x3 matrix
+            Assert.AreEqual(30, rally.Config.StageRecceSpeedMph);
+        }
+
+        // -----------------------------------------------------------------
+        // Config section tests
+        // -----------------------------------------------------------------
+
+        [TestMethod]
+        public void ParseFromFile_ConfigSection_ParsesStageRecceSpeed()
+        {
+            var md = @"## Config
+
+| Parameter         | Value |
+|-------------------|-------|
+| Stage recce speed | 45    |
+
+## Stages
+
+| Code | Name |
+|------|------|
+| 1 | Stage One |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.AreEqual(45, rally.Config.StageRecceSpeedMph);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_MissingConfigSection_ThrowsInvalidOperationException()
+        {
+            var md = @"## Stages
+
+| Code | Name |
+|------|------|
+| 1 | Stage One |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                try
+                {
+                    RallyParser.ParseFromFile(path);
+                    Assert.Fail("Expected InvalidOperationException was not thrown.");
+                }
+                catch (InvalidOperationException) { }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_MissingStageRecceSpeedParam_ThrowsInvalidOperationException()
+        {
+            var md = @"## Config
+
+| Parameter      | Value |
+|----------------|-------|
+| Some other key | 99    |
+
+## Stages
+
+| Code | Name |
+|------|------|
+| 1 | Stage One |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                try
+                {
+                    RallyParser.ParseFromFile(path);
+                    Assert.Fail("Expected InvalidOperationException was not thrown.");
+                }
+                catch (InvalidOperationException) { }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_InvalidStageRecceSpeedValue_ThrowsFormatException()
+        {
+            var md = @"## Config
+
+| Parameter         | Value  |
+|-------------------|--------|
+| Stage recce speed | notnum |
+
+## Stages
+
+| Code | Name |
+|------|------|
+| 1 | Stage One |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                try
+                {
+                    RallyParser.ParseFromFile(path);
+                    Assert.Fail("Expected FormatException was not thrown.");
+                }
+                catch (FormatException) { }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_EmptyFile_ThrowsInvalidOperationException()
+        {
+            var path = WriteTempFile(string.Empty);
+            try
+            {
+                try
+                {
+                    RallyParser.ParseFromFile(path);
+                    Assert.Fail("Expected InvalidOperationException was not thrown.");
+                }
+                catch (InvalidOperationException) { }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
         }
     }
 }
