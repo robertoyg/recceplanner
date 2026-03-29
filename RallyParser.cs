@@ -23,6 +23,7 @@ namespace ReccePlanner
 
             string section = null;
             string[] columnCodes = null;
+            bool stageRecceSpeedSet = false;
 
             foreach (var rawLine in lines)
             {
@@ -54,7 +55,30 @@ namespace ReccePlanner
                 if (cells.Length == 0)
                     continue;
 
-                if (section == "stages")
+                if (section == "config")
+                {
+                    if (cells[0].ToLowerInvariant() == "parameter")
+                        continue;
+
+                    if (cells.Length < 2)
+                        continue;
+
+                    var parameter = cells[0].ToLowerInvariant();
+                    var value = cells[1];
+
+                    if (parameter == "stage recce speed")
+                    {
+                        if (!double.TryParse(value, out var speed))
+                            throw new FormatException($"Invalid value for 'Stage recce speed': '{value}'. Expected a number.");
+                        rally.Config.StageRecceSpeedMph = speed;
+                        stageRecceSpeedSet = true;
+                    }
+                    else
+                    {
+                        Console.WriteLine("Warning: Unknown config parameter: " + cells[0]);
+                    }
+                }
+                else if (section == "stages")
                 {
                     if (cells[0].ToLowerInvariant() == "code")
                         continue;
@@ -104,6 +128,9 @@ namespace ReccePlanner
                     }
                 }
             }
+
+            if (!stageRecceSpeedSet)
+                throw new InvalidOperationException("Required config parameter 'Stage recce speed' is missing.");
 
             return rally;
         }

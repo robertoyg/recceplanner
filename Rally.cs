@@ -12,6 +12,7 @@ namespace ReccePlanner
 {
     internal class Rally
     {
+        public RallyConfig Config { get; set; } = new RallyConfig();
         public List<Location> Locations { get; set; } = new List<Location>();
         public List<Route> TravelTimes { get; set; } = new List<Route>();
         public Location House { get; } = new Location("House", "H");
