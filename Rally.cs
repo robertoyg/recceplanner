@@ -36,10 +36,13 @@ namespace ReccePlanner
         }
 
         // Opt 3: remainingCounts eliminates duplicate permutations; Opt 4: partialCost enables branch-and-bound
+        // clockTime: departure time from the last visited stage (or recce start time when combo is empty).
+        //            Null means time tracking is disabled (no open/close enforcement).
         private void GenerateCombinations(
             Dictionary<Location, int> remainingCounts,
             List<Location> currentCombo,
-            int partialCost)
+            int partialCost,
+            TimeSpan? clockTime)
         {
             if (remainingCounts.Count == 0)
             {
@@ -78,13 +81,31 @@ namespace ReccePlanner
                 Parallel.For(0, stages.Count, i =>
                 {
                     var stage = stages[i];
+
+                    // Time window check for the first stage (always pass 1)
+                    TimeSpan? nextClock = null;
+                    int initialWaitMinutes = 0;
+                    if (clockTime.HasValue)
+                    {
+                        var stageStart = clockTime.Value;
+                        double durationMin = Math.Ceiling(stage.DistanceMiles / Config.StageRecceSpeedPassOneMph * 60.0);
+                        if (stage.OpenTime.HasValue && stageStart < stage.OpenTime.Value)
+                        {
+                            initialWaitMinutes = (int)Math.Ceiling((stage.OpenTime.Value - stageStart).TotalMinutes);
+                            if (initialWaitMinutes > optimalRouteTime) return;
+                            stageStart = stage.OpenTime.Value;
+                        }
+                        if (stage.CloseTime.HasValue && stageStart + TimeSpan.FromMinutes(durationMin) > stage.CloseTime.Value) return;
+                        nextClock = stageStart + TimeSpan.FromMinutes(durationMin);
+                    }
+
                     var remainingCountsCopy = new Dictionary<Location, int>(remainingCounts);
                     remainingCountsCopy[stage]--;
                     if (remainingCountsCopy[stage] == 0)
                         remainingCountsCopy.Remove(stage);
 
-                    // No step cost yet — currentCombo was empty (no predecessor)
-                    GenerateCombinations(remainingCountsCopy, new List<Location> { stage }, 0);
+                    // No transit cost yet — currentCombo was empty (no predecessor); wait is the only initial cost
+                    GenerateCombinations(remainingCountsCopy, new List<Location> { stage }, initialWaitMinutes, nextClock);
                 });
             }
             else
@@ -100,6 +121,25 @@ namespace ReccePlanner
                     if (partialCost + stepCost > optimalRouteTime)
                         continue; // prune — can't beat or tie the best known
 
+                    // Time window check: stageStart = clockTime + transit; pass determined by remaining count
+                    TimeSpan? nextClock = null;
+                    int waitMinutes = 0;
+                    if (clockTime.HasValue)
+                    {
+                        var stageStart = clockTime.Value + TimeSpan.FromMinutes(stepCost);
+                        int pass = remainingCounts[stage] == 2 ? 1 : 2;
+                        double speed = pass == 1 ? Config.StageRecceSpeedPassOneMph : Config.StageRecceSpeedPassTwoMph;
+                        double durationMin = Math.Ceiling(stage.DistanceMiles / speed * 60.0);
+                        if (stage.OpenTime.HasValue && stageStart < stage.OpenTime.Value)
+                        {
+                            waitMinutes = (int)Math.Ceiling((stage.OpenTime.Value - stageStart).TotalMinutes);
+                            if (partialCost + stepCost + waitMinutes > optimalRouteTime) continue;
+                            stageStart = stage.OpenTime.Value;
+                        }
+                        if (stage.CloseTime.HasValue && stageStart + TimeSpan.FromMinutes(durationMin) > stage.CloseTime.Value) continue;
+                        nextClock = stageStart + TimeSpan.FromMinutes(durationMin);
+                    }
+
                     // Backtrack: decrement count (remove key if exhausted), recurse, restore
                     remainingCounts[stage]--;
                     bool removed = remainingCounts[stage] == 0;
@@ -107,7 +147,7 @@ namespace ReccePlanner
                         remainingCounts.Remove(stage);
                     currentCombo.Add(stage);
 
-                    GenerateCombinations(remainingCounts, currentCombo, partialCost + stepCost);
+                    GenerateCombinations(remainingCounts, currentCombo, partialCost + stepCost + waitMinutes, nextClock);
 
                     currentCombo.RemoveAt(currentCombo.Count - 1);
                     if (removed)
@@ -141,7 +181,11 @@ namespace ReccePlanner
 
             Console.WriteLine("Finding optimal route from all possibilities...\r");
 
-            GenerateCombinations(remainingCounts, new List<Location>(), 0);
+            // Derive recce start time from the earliest stage open time
+            var openTimesForStart = Locations.Where(l => l.OpenTime.HasValue).Select(l => l.OpenTime.Value).ToList();
+            TimeSpan? recceStartTime = openTimesForStart.Any() ? openTimesForStart.Min() : (TimeSpan?)null;
+
+            GenerateCombinations(remainingCounts, new List<Location>(), 0, recceStartTime);
 
             Console.WriteLine("\n\nNumber of optimal possible routes found: " + optimalRoutes.Count);
 
@@ -180,9 +224,12 @@ namespace ReccePlanner
 
         internal void GenerateReccePlan(List<Location> route, string outputPath = null)
         {
-            if (!Config.StartTimeFirstStage.HasValue)
+            var planOpenTimes = Locations.Where(l => l.OpenTime.HasValue).Select(l => l.OpenTime.Value).ToList();
+            TimeSpan? recceStartTime = planOpenTimes.Any() ? planOpenTimes.Min() : (TimeSpan?)null;
+
+            if (!recceStartTime.HasValue)
             {
-                Console.WriteLine("Cannot generate plan: 'Start time first stage' is not set in the config section of the input file.");
+                Console.WriteLine("Cannot generate plan: no stages have open times set.");
                 return;
             }
 
@@ -195,13 +242,13 @@ namespace ReccePlanner
             lines.Add("|-------------------------------|-------|");
             lines.Add($"| Stage recce speed pass 1      | {Config.StageRecceSpeedPassOneMph} mph |");
             lines.Add($"| Stage recce speed pass 2      | {Config.StageRecceSpeedPassTwoMph} mph |");
-            lines.Add($"| Start time first stage        | {FormatTime(Config.StartTimeFirstStage.Value)} |");
+            lines.Add($"| Recce start time              | {FormatTime(recceStartTime.Value)} |");
             lines.Add("");
             lines.Add("## Recce Plan");
             lines.Add("| Start Time | Stage or Transit | Pass # | End Time |");
             lines.Add("|------------|------------------|--------|----------|");
 
-            var currentTime = Config.StartTimeFirstStage.Value;
+            var currentTime = recceStartTime.Value;
             var passCounts = new Dictionary<Location, int>();
 
             for (int i = 0; i < route.Count; i++)
@@ -215,8 +262,14 @@ namespace ReccePlanner
 
                 double speed = pass == 1 ? Config.StageRecceSpeedPassOneMph : Config.StageRecceSpeedPassTwoMph;
                 double durationMinutes = Math.Ceiling((location.DistanceMiles / speed) * 60.0);
-                var stageEnd = currentTime.Add(TimeSpan.FromMinutes(durationMinutes));
 
+                if (location.OpenTime.HasValue && currentTime < location.OpenTime.Value)
+                {
+                    lines.Add($"| {FormatTime(currentTime)} | Waiting for {location.Name} to open | | {FormatTime(location.OpenTime.Value)} |");
+                    currentTime = location.OpenTime.Value;
+                }
+
+                var stageEnd = currentTime.Add(TimeSpan.FromMinutes(durationMinutes));
                 lines.Add($"| {FormatTime(currentTime)} | {location.Name} | {pass} | {FormatTime(stageEnd)} |");
                 currentTime = stageEnd;
 

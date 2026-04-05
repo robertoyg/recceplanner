@@ -268,9 +268,9 @@ namespace ReccePlannerTests
             var rally = new Rally { WaitForInput = false };
             rally.Config.StageRecceSpeedPassOneMph = 30;
             rally.Config.StageRecceSpeedPassTwoMph = 30;
-            rally.Config.StartTimeFirstStage = new TimeSpan(7, 0, 0);
 
-            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0 };
+            // OpenTime on locA drives the derived recce start time (7:00 am)
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0, OpenTime = new TimeSpan(7, 0, 0) };
             var locB = new Location("Stage Beta", "B") { DistanceMiles = 9.0 };
             rally.Locations.AddRange(new[] { locA, locB });
             rally.TravelTimes.AddRange(new[]
@@ -373,14 +373,27 @@ namespace ReccePlannerTests
         }
 
         [TestMethod]
-        public void GenerateReccePlan_NoStartTime_DoesNotWriteFile()
+        public void GenerateReccePlan_NoOpenTimes_DoesNotWriteFile()
         {
-            var rally = BuildPlanTestRally();
-            rally.Config.StartTimeFirstStage = null;
+            // When no stages have open times, recce start time cannot be derived → no plan written.
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 30;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0 };
+            var locB = new Location("Stage Beta", "B") { DistanceMiles = 9.0 };
+            rally.Locations.AddRange(new[] { locA, locB });
+            rally.TravelTimes.AddRange(new[]
+            {
+                new Route(locA, locA, 100),
+                new Route(locA, locB, 1),
+                new Route(locB, locA, 2),
+                new Route(locB, locB, 100),
+            });
             RunSilently(rally);
 
             var outputPath = Path.GetTempFileName();
-            File.Delete(outputPath); // ensure it doesn't exist before the call
+            File.Delete(outputPath);
             try
             {
                 var prev = Console.Out;
@@ -388,7 +401,7 @@ namespace ReccePlannerTests
                 try { rally.GenerateReccePlan(rally.OptimalRoutes["A-B-A-B"], outputPath); }
                 finally { Console.SetOut(prev); }
 
-                Assert.IsFalse(File.Exists(outputPath), "No file should be written when start time is missing.");
+                Assert.IsFalse(File.Exists(outputPath), "No file should be written when no stages have open times.");
             }
             finally
             {
@@ -428,9 +441,8 @@ namespace ReccePlannerTests
             var rally = new Rally { WaitForInput = false };
             rally.Config.StageRecceSpeedPassOneMph = 60;
             rally.Config.StageRecceSpeedPassTwoMph = 30;
-            rally.Config.StartTimeFirstStage = new TimeSpan(7, 0, 0);
 
-            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0 };
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.0, OpenTime = new TimeSpan(7, 0, 0) };
             rally.Locations.Add(locA);
             rally.TravelTimes.Add(new Route(locA, locA, 5));
 
@@ -451,6 +463,223 @@ namespace ReccePlannerTests
             }
         }
 
+        // -----------------------------------------------------------------
+        // Time window enforcement
+        // -----------------------------------------------------------------
+
+        // Two stages: A (always open) and B (opens at 1:00 pm).
+        // All distances are 0 mi so stage duration = 0 min.
+        // Start time: 11:00 am.
+        // Transit A→B = 60 min  → arrive B at 12:00 pm (too early) → invalid
+        // Transit A→A = 120 min → arrive A pass 2 at 1:00 pm
+        //                          then A→B 60 min → arrive B at 2:00 pm (valid)
+        //
+        // Without constraint: A-B-A-B (transit 60+60+60=180) or similar short routes win.
+        // With constraint:    only routes that reach B at or after 1:00 pm are kept.
+        //                     A-A-B-B (transit 120+60+60=240) is the only valid route.
+        private static Rally BuildTimeWindowRally()
+        {
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 30;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+
+            // OpenTime on locA (11am) drives the derived recce start time
+            var locA = new Location("Stage A", "A") { DistanceMiles = 0.0, OpenTime = new TimeSpan(11, 0, 0) };
+            var locB = new Location("Stage B", "B")
+            {
+                DistanceMiles = 0.0,
+                OpenTime = new TimeSpan(13, 0, 0)  // 1:00 pm
+            };
+            rally.Locations.AddRange(new[] { locA, locB });
+            rally.TravelTimes.AddRange(new[]
+            {
+                new Route(locA, locA, 120),
+                new Route(locA, locB,  60),
+                new Route(locB, locA,  60),
+                new Route(locB, locB, 120),
+            });
+            return rally;
+        }
+
+        [TestMethod]
+        public void TimeWindow_ArrivingBeforeOpenTime_AddsWaitCostNotDiscards()
+        {
+            // A-B-A-B: start 11am → A→B transit 60min → arrive B at 12pm → B opens 1pm → wait 60min.
+            // Cost = transit(60) + wait(60) + transit B→A(60) + transit A→B(60) = 240.
+            // Unconstrained cost would be 180 (transit only).  Route must be KEPT with wait folded in.
+            var rally = BuildTimeWindowRally();
+            RunSilently(rally);
+
+            Assert.IsTrue(rally.OptimalRoutes.ContainsKey("A-B-A-B"),
+                "A-B-A-B should be kept: early arrival adds wait cost, not a discard.");
+            Assert.AreEqual(240, rally.OptimalRouteTime,
+                "Optimal cost includes 60 min wait at B: transit(60) + wait(60) + transit(60) + transit(60) = 240.");
+        }
+
+        [TestMethod]
+        public void TimeWindow_WaitMakesRouteSuboptimal_BranchPruned()
+        {
+            // B-A-B-A: start at B (11am) → B opens 1pm → wait 120min → B→A(60) → A→B(60) → B→A(60) = 300.
+            // A-A-B-B: A→A(120) + A→B(60) + B→B(120) = 300.
+            // Both are more expensive than A-B-A-B (240) and should not appear in optimal routes.
+            var rally = BuildTimeWindowRally();
+            RunSilently(rally);
+
+            Assert.IsFalse(rally.OptimalRoutes.ContainsKey("B-A-B-A"),
+                "B-A-B-A costs 300 (120 wait + 180 transit) — should lose to A-B-A-B at 240.");
+            Assert.IsFalse(rally.OptimalRoutes.ContainsKey("A-A-B-B"),
+                "A-A-B-B costs 300 (transit 120+60+120) — should lose to A-B-A-B at 240.");
+        }
+
+        [TestMethod]
+        public void TimeWindow_OpenTimeConstraint_RaisesOptimalCost()
+        {
+            // Without time constraints, optimal for this graph would be A-B-A-B at transit cost 180.
+            // With B opening at 1pm, the first visit to B forces a 60-min wait → optimal cost = 240.
+            var rally = BuildTimeWindowRally();
+            RunSilently(rally);
+
+            Assert.AreEqual(240, rally.OptimalRouteTime,
+                "Open time constraint raises optimal cost from unconstrained 180 to 240 (includes wait).");
+            Assert.IsTrue(rally.OptimalRoutes.ContainsKey("A-B-A-B"),
+                "A-B-A-B is still the winning route with wait folded into cost.");
+        }
+
+        [TestMethod]
+        public void TimeWindow_CloseTime_RouteThatRunsLate_IsDiscarded()
+        {
+            // Stage B closes at 12:00 pm. Any visit to B must finish by noon.
+            // Start 11:00 am, A→B transit 30 min → arrive B at 11:30 am, finish instantly → ok for 1st visit.
+            // B→B transit 120 min → arrive B pass 2 at 1:30 pm → AFTER close → invalid.
+            // Only valid routes: ones that fit both B visits before noon.
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 30;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+
+            // OpenTime on locA (11am) drives the derived recce start time
+            var locA = new Location("Stage A", "A") { DistanceMiles = 0.0, OpenTime = new TimeSpan(11, 0, 0) };
+            var locB = new Location("Stage B", "B")
+            {
+                DistanceMiles = 0.0,
+                CloseTime = new TimeSpan(12, 0, 0) // noon
+            };
+            rally.Locations.AddRange(new[] { locA, locB });
+            rally.TravelTimes.AddRange(new[]
+            {
+                new Route(locA, locA, 5),
+                new Route(locA, locB, 5),
+                new Route(locB, locA, 5),
+                new Route(locB, locB, 5),
+            });
+
+            RunSilently(rally);
+
+            // B-B-A-A: arrive B pass 1 at 11am, depart 11am, arrive B pass 2 at 11:05am → both before noon → valid
+            Assert.IsTrue(rally.OptimalRoutes.ContainsKey("B-B-A-A"),
+                "B-B-A-A should be valid: both B visits finish before close time.");
+
+            // Any route that hits B for the 2nd time after noon should not appear.
+            // Specifically, routes like A-A-B-B: arrive B pass 1 at 11:10am, B pass 2 at 11:15am → valid
+            // (close time only rules out very late visits; confirm no route violates it)
+            foreach (var key in rally.OptimalRoutes.Keys)
+            {
+                var route = rally.OptimalRoutes[key];
+                var time = rally.Locations.Where(l => l.OpenTime.HasValue).Select(l => l.OpenTime.Value).Min();
+                var passCounts = new System.Collections.Generic.Dictionary<Location, int>();
+                int idx = 0;
+                foreach (var loc in route)
+                {
+                    if (!passCounts.ContainsKey(loc)) passCounts[loc] = 0;
+                    passCounts[loc]++;
+
+                    if (loc.CloseTime.HasValue)
+                    {
+                        double speed = passCounts[loc] == 1
+                            ? rally.Config.StageRecceSpeedPassOneMph
+                            : rally.Config.StageRecceSpeedPassTwoMph;
+                        double dur = Math.Ceiling(loc.DistanceMiles / speed * 60.0);
+                        Assert.IsTrue(time + TimeSpan.FromMinutes(dur) <= loc.CloseTime.Value,
+                            $"Route {key}: stage {loc.Code} finishes after close time.");
+                    }
+
+                    double d = Math.Ceiling(loc.DistanceMiles / rally.Config.StageRecceSpeedPassOneMph * 60.0);
+                    time = time.Add(TimeSpan.FromMinutes(d));
+                    if (idx < route.Count - 1)
+                    {
+                        var next = route[idx + 1];
+                        if (rally.TravelTimes.Find(r => r.Source == loc && r.Target == next) is Route tr)
+                            time = time.Add(TimeSpan.FromMinutes(tr.Time));
+                    }
+                    idx++;
+                }
+            }
+        }
+
+        [TestMethod]
+        public void GenerateReccePlan_ShowsWaitWhenArrivingBeforeOpenTime()
+        {
+            // A-B-A-B with start 11am: arrive B at 12pm, B opens 1pm → wait row expected in plan.
+            var rally = BuildTimeWindowRally();
+            RunSilently(rally);
+
+            var route = rally.OptimalRoutes["A-B-A-B"];
+            var outputPath = Path.GetTempFileName();
+            try
+            {
+                rally.GenerateReccePlan(route, outputPath);
+                var content = File.ReadAllText(outputPath);
+                StringAssert.Contains(content, "Waiting for Stage B to open");
+            }
+            finally
+            {
+                File.Delete(outputPath);
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Stage selection
+        // -----------------------------------------------------------------
+
+        [TestMethod]
+        public void StageSelection_OnlyIncludedStagesAppearInRoute()
+        {
+            // 3-stage cyclic rally; remove C before optimizing.
+            var rally = BuildCyclicRally(3);
+            rally.Locations = rally.Locations.Where(l => l.Code != "C").ToList();
+            RunSilently(rally);
+
+            Assert.IsTrue(rally.OptimalRoutes.Count > 0, "Should find at least one route.");
+            foreach (var key in rally.OptimalRoutes.Keys)
+                Assert.IsFalse(key.Contains("C"), $"Route '{key}' must not contain excluded stage C.");
+        }
+
+        [TestMethod]
+        public void TimeWindow_NoOpenTimes_TimeWindowsNotEnforced()
+        {
+            // When no stages have open times, recce start cannot be derived → no enforcement.
+            var rally = new Rally { WaitForInput = false };
+            rally.Config.StageRecceSpeedPassOneMph = 30;
+            rally.Config.StageRecceSpeedPassTwoMph = 30;
+
+            var locA = new Location("Stage A", "A") { DistanceMiles = 0.0 };
+            var locB = new Location("Stage B", "B") { DistanceMiles = 0.0 };
+            // No open times on any stage → derived start = null → no time enforcement
+            rally.Locations.AddRange(new[] { locA, locB });
+            rally.TravelTimes.AddRange(new[]
+            {
+                new Route(locA, locA, 5),
+                new Route(locA, locB, 5),
+                new Route(locB, locA, 5),
+                new Route(locB, locB, 5),
+            });
+
+            RunSilently(rally);
+
+            // Routes should still be found — no open times means no enforcement
+            Assert.IsTrue(rally.OptimalRoutes.Count > 0,
+                "Routes should be found when no stages have open times.");
+        }
+
         [TestMethod]
         public void GenerateReccePlan_StageDurationRoundedUp()
         {
@@ -459,9 +688,8 @@ namespace ReccePlannerTests
             var rally = new Rally { WaitForInput = false };
             rally.Config.StageRecceSpeedPassOneMph = 30;
             rally.Config.StageRecceSpeedPassTwoMph = 30;
-            rally.Config.StartTimeFirstStage = new TimeSpan(7, 0, 0);
 
-            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.1 };
+            var locA = new Location("Stage Alpha", "A") { DistanceMiles = 6.1, OpenTime = new TimeSpan(7, 0, 0) };
             rally.Locations.Add(locA);
             rally.TravelTimes.Add(new Route(locA, locA, 5));
 

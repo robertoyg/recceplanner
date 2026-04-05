@@ -25,6 +25,7 @@ namespace ReccePlanner
 
             string section = null;
             string[] columnCodes = null;
+            Dictionary<string, int> stageColumnIndices = null;
             bool stageRecceSpeedPassOneSet = false;
             bool stageRecceSpeedPassTwoSet = false;
 
@@ -47,6 +48,7 @@ namespace ReccePlanner
                 {
                     section = line.Substring(3).Trim().ToLowerInvariant();
                     columnCodes = null;
+                    stageColumnIndices = null;
                     continue;
                 }
 
@@ -86,12 +88,6 @@ namespace ReccePlanner
                         rally.Config.StageRecceSpeedPassTwoMph = speed;
                         stageRecceSpeedPassTwoSet = true;
                     }
-                    else if (parameter == "start time first stage")
-                    {
-                        if (!DateTime.TryParse(value, out var dt))
-                            throw new FormatException($"Invalid value for 'Start time first stage': '{value}'. Expected a time like '7:00 am'.");
-                        rally.Config.StartTimeFirstStage = dt.TimeOfDay;
-                    }
                     else
                     {
                         Console.WriteLine("Warning: Unknown config parameter: " + cells[0]);
@@ -100,7 +96,12 @@ namespace ReccePlanner
                 else if (section == "stages")
                 {
                     if (cells[0].ToLowerInvariant() == "code")
+                    {
+                        stageColumnIndices = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                        for (int i = 0; i < cells.Length; i++)
+                            stageColumnIndices[cells[i].Trim()] = i;
                         continue;
+                    }
 
                     if (cells.Length < 2)
                         continue;
@@ -108,8 +109,35 @@ namespace ReccePlanner
                     var code = cells[0];
                     var name = cells[1];
                     var location = new Location(name, code);
-                    if (cells.Length >= 3 && double.TryParse(cells[2], out var distance))
-                        location.DistanceMiles = distance;
+
+                    if (stageColumnIndices != null)
+                    {
+                        if (stageColumnIndices.TryGetValue("Distance (mi)", out int distIdx) && distIdx < cells.Length)
+                            if (double.TryParse(cells[distIdx], out var dist))
+                                location.DistanceMiles = dist;
+
+                        if (stageColumnIndices.TryGetValue("Open time", out int openIdx) && openIdx < cells.Length && !string.IsNullOrWhiteSpace(cells[openIdx]))
+                        {
+                            if (DateTime.TryParse(cells[openIdx], out var dt))
+                                location.OpenTime = dt.TimeOfDay;
+                            else
+                                Console.WriteLine($"Warning: Invalid open time '{cells[openIdx]}' for stage '{code}'.");
+                        }
+
+                        if (stageColumnIndices.TryGetValue("Close time", out int closeIdx) && closeIdx < cells.Length && !string.IsNullOrWhiteSpace(cells[closeIdx]))
+                        {
+                            if (DateTime.TryParse(cells[closeIdx], out var dt))
+                                location.CloseTime = dt.TimeOfDay;
+                            else
+                                Console.WriteLine($"Warning: Invalid close time '{cells[closeIdx]}' for stage '{code}'.");
+                        }
+                    }
+                    else
+                    {
+                        if (cells.Length >= 3 && double.TryParse(cells[2], out var dist))
+                            location.DistanceMiles = dist;
+                    }
+
                     locations[code] = location;
                     rally.Locations.Add(location);
                 }

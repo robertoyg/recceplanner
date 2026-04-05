@@ -598,34 +598,39 @@ namespace ReccePlannerTests
         // -----------------------------------------------------------------
 
         [TestMethod]
-        public void ParseFromFile_StartTimeFirstStage_ParsedCorrectly()
+        public void ParseFromFile_RecceStartTime_DerivedFromEarliestOpenTime()
         {
+            // Recce start time is no longer read from config — it is derived in Rally.FindOptimalRecce
+            // from the minimum open time across all stages.  The parser does not set it; this test
+            // verifies that stage open times are parsed correctly so the derivation can work.
             var md = @"## Config
 
 | Parameter                  | Value   |
 |----------------------------|---------|
 | Stage recce speed pass 1   | 30      |
 | Stage recce speed pass 2   | 30      |
-| Start time first stage     | 7:00 am |
 
 ## Stages
 
-| Code | Name |
-|------|------|
-| 1 | Stage One |
+| Code | Name      | Distance (mi) | Open time |
+|------|-----------|---------------|-----------|
+| 1    | Stage One | 5.0           | 7:00 am   |
+| 2    | Stage Two | 3.0           | 8:00 am   |
 
 ## Travel Times (minutes)
 
-|   | 1 |
-|---|---|
-| 1 | 5 |
+|   | 1  | 2  |
+|---|----|----|
+| 1 | 5  | 10 |
+| 2 | 10 | 5  |
 ";
             var path = WriteTempFile(md);
             try
             {
                 var rally = RallyParser.ParseFromFile(path);
-                Assert.IsTrue(rally.Config.StartTimeFirstStage.HasValue);
-                Assert.AreEqual(new TimeSpan(7, 0, 0), rally.Config.StartTimeFirstStage.Value);
+                // Earliest open time is 7:00 am (stage 1) — confirm stage open times are parsed
+                Assert.AreEqual(new TimeSpan(7, 0, 0), rally.Locations[0].OpenTime.Value);
+                Assert.AreEqual(new TimeSpan(8, 0, 0), rally.Locations[1].OpenTime.Value);
             }
             finally
             {
@@ -634,9 +639,10 @@ namespace ReccePlannerTests
         }
 
         [TestMethod]
-        public void ParseFromFile_StartTimeFirstStage_Missing_IsNull()
+        public void ParseFromFile_NoOpenTimes_RecceStartTimeIsNull()
         {
-            // Start time is optional — no exception if absent
+            // When no stages have open times, the derived recce start time in Rally.cs will be null.
+            // Verify that stages without open times parse correctly with null OpenTime.
             var path = WriteTempFile(ConfigSection + @"## Stages
 
 | Code | Name |
@@ -652,7 +658,8 @@ namespace ReccePlannerTests
             try
             {
                 var rally = RallyParser.ParseFromFile(path);
-                Assert.IsFalse(rally.Config.StartTimeFirstStage.HasValue);
+                Assert.IsFalse(rally.Locations[0].OpenTime.HasValue,
+                    "Stage with no Open time column should have null OpenTime.");
             }
             finally
             {
@@ -661,21 +668,21 @@ namespace ReccePlannerTests
         }
 
         [TestMethod]
-        public void ParseFromFile_InvalidStartTimeValue_ThrowsFormatException()
+        public void ParseFromFile_InvalidOpenTimeValue_LogsWarningAndDefaultsToNull()
         {
+            // An invalid open time in the stages table should warn and leave OpenTime as null.
             var md = @"## Config
 
 | Parameter                  | Value    |
 |----------------------------|----------|
 | Stage recce speed pass 1   | 30       |
 | Stage recce speed pass 2   | 30       |
-| Start time first stage     | notaTime |
 
 ## Stages
 
-| Code | Name |
-|------|------|
-| 1 | Stage One |
+| Code | Name      | Open time |
+|------|-----------|-----------|
+| 1    | Stage One | notaTime  |
 
 ## Travel Times (minutes)
 
@@ -686,12 +693,9 @@ namespace ReccePlannerTests
             var path = WriteTempFile(md);
             try
             {
-                try
-                {
-                    RallyParser.ParseFromFile(path);
-                    Assert.Fail("Expected FormatException was not thrown.");
-                }
-                catch (FormatException) { }
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.IsFalse(rally.Locations[0].OpenTime.HasValue,
+                    "Invalid open time should result in null OpenTime, not throw.");
             }
             finally
             {
@@ -760,6 +764,155 @@ namespace ReccePlannerTests
             }
         }
 
+        // -----------------------------------------------------------------
+        // Stage open/close time tests
+        // -----------------------------------------------------------------
+
+        [TestMethod]
+        public void ParseFromFile_StagesWithOpenAndCloseTimes_ParsedCorrectly()
+        {
+            var md = ConfigSection + @"## Stages
+
+| Code | Name      | Distance (mi) | Open time | Close time |
+|------|-----------|---------------|-----------|------------|
+| 1    | Stage One | 6.3           | 11:00 am  | 8:00 pm    |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.IsTrue(rally.Locations[0].OpenTime.HasValue, "OpenTime should be set");
+                Assert.IsTrue(rally.Locations[0].CloseTime.HasValue, "CloseTime should be set");
+                Assert.AreEqual(new TimeSpan(11, 0, 0), rally.Locations[0].OpenTime.Value);
+                Assert.AreEqual(new TimeSpan(20, 0, 0), rally.Locations[0].CloseTime.Value);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_StagesWithoutTimeColumns_OpenAndCloseTimeAreNull()
+        {
+            var md = ConfigSection + @"## Stages
+
+| Code | Name      | Distance (mi) |
+|------|-----------|---------------|
+| 1    | Stage One | 6.3           |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.IsNull(rally.Locations[0].OpenTime, "OpenTime should be null when column absent");
+                Assert.IsNull(rally.Locations[0].CloseTime, "CloseTime should be null when column absent");
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_StagesWithBlankTimeCells_OpenAndCloseTimeAreNull()
+        {
+            var md = ConfigSection + @"## Stages
+
+| Code | Name      | Distance (mi) | Open time | Close time |
+|------|-----------|---------------|-----------|------------|
+| 1    | Stage One | 6.3           |           |            |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.IsNull(rally.Locations[0].OpenTime, "OpenTime should be null when cell is blank");
+                Assert.IsNull(rally.Locations[0].CloseTime, "CloseTime should be null when cell is blank");
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_MultipleStages_SomeWithTimesOthersWithout()
+        {
+            var md = ConfigSection + @"## Stages
+
+| Code | Name      | Distance (mi) | Open time | Close time |
+|------|-----------|---------------|-----------|------------|
+| 1    | Stage One | 6.3           | 11:00 am  | 8:00 pm    |
+| 2    | Stage Two | 9.8           |           |            |
+
+## Travel Times (minutes)
+
+|   | 1  | 2  |
+|---|----|-----|
+| 1 | 5  | 10  |
+| 2 | 10 | 5   |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.IsTrue(rally.Locations[0].OpenTime.HasValue);
+                Assert.IsTrue(rally.Locations[0].CloseTime.HasValue);
+                Assert.IsNull(rally.Locations[1].OpenTime);
+                Assert.IsNull(rally.Locations[1].CloseTime);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        [TestMethod]
+        public void ParseFromFile_AfternoonOpenTime_ParsedCorrectly()
+        {
+            var md = ConfigSection + @"## Stages
+
+| Code | Name      | Distance (mi) | Open time | Close time |
+|------|-----------|---------------|-----------|------------|
+| 1    | Stage One | 5.0           | 3:00 pm   | 8:00 pm    |
+
+## Travel Times (minutes)
+
+|   | 1 |
+|---|---|
+| 1 | 5 |
+";
+            var path = WriteTempFile(md);
+            try
+            {
+                var rally = RallyParser.ParseFromFile(path);
+                Assert.AreEqual(new TimeSpan(15, 0, 0), rally.Locations[0].OpenTime.Value);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
         [TestMethod]
         public void ParseFromFile_TemplateSampleFile_LoadsStartTimeAndDistances()
         {
@@ -772,8 +925,12 @@ namespace ReccePlannerTests
 
             var rally = RallyParser.ParseFromFile(templatePath);
 
-            Assert.IsTrue(rally.Config.StartTimeFirstStage.HasValue, "StartTimeFirstStage should be set");
-            Assert.AreEqual(new TimeSpan(7, 0, 0), rally.Config.StartTimeFirstStage.Value);
+            // Confirm stage open times are parsed (earliest = 11:00 am, drives derived recce start)
+            Assert.IsTrue(rally.Locations.All(l => l.OpenTime.HasValue),
+                "All template stages should have an OpenTime.");
+            Assert.AreEqual(new TimeSpan(11, 0, 0),
+                rally.Locations.Select(l => l.OpenTime.Value).Min(),
+                "Earliest stage open time should be 11:00 am.");
             Assert.AreEqual(6.3, rally.Locations[0].DistanceMiles, 0.001);
             Assert.AreEqual(9.8, rally.Locations[1].DistanceMiles, 0.001);
             Assert.AreEqual(7.36, rally.Locations[2].DistanceMiles, 0.001);
