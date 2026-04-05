@@ -14,6 +14,10 @@ namespace ReccePlanner
 
         public double DistanceMiles { get; set; }
 
+        public TimeSpan? OpenTime { get; set; }
+
+        public TimeSpan? CloseTime { get; set; }
+
         public Location(string name, string code)
         {
             Name = name;
