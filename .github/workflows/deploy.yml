@@ -179,6 +179,10 @@ jobs:
             --name ${{ env.MCP_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.MCP_IMAGE }}:${{ github.sha }}
+          az containerapp ingress update \
+            --name ${{ env.MCP_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --target-port 5000
 
       - name: Deploy Agent API Container App
         run: |
@@ -205,6 +209,10 @@ jobs:
             --name ${{ env.AGENT_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.AGENT_IMAGE }}:${{ github.sha }}
+          az containerapp ingress update \
+            --name ${{ env.AGENT_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --target-port 8000
 
       # Echo the Agent API public URL for reference (useful in logs / post-deploy checks).
       - name: Echo Agent API URL

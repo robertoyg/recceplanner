@@ -66,7 +66,7 @@ resource recceplannermcp 'Microsoft.App/containerApps@2024-03-01' = {
       // ACR registry credentials added by GitHub Actions on first image push
       ingress: {
         external: false
-        targetPort: 80  // helloworld listens on 80; CI will update to 5000
+        targetPort: 5000
         transport: 'http'
       }
     }
@@ -118,7 +118,7 @@ resource recceplanneragent 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       ingress: {
         external: true
-        targetPort: 80  // helloworld listens on 80; CI will update to 8000
+        targetPort: 8000
         transport: 'http'
       }
     }
