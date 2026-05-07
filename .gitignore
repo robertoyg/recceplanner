@@ -10,3 +10,19 @@
 .vs/
 *.user
 *.suo
+
+# Claude Code
+.claude/settings.local.json
+
+# Secrets — never commit
+.env
+**/.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+dist/

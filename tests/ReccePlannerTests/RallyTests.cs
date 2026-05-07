@@ -680,6 +680,443 @@ namespace ReccePlannerTests
                 "Routes should be found when no stages have open times.");
         }
 
+        // -----------------------------------------------------------------
+        // Two-day recce split analysis (Olympus 2026)
+        // Run manually with [Ignore] removed. Writes plan files to OneDrive.
+        //
+        // How to use for a future 2-day recce:
+        //   1. Update olympusFile path and day window constants.
+        //   2. Edit the splits array: fix "base" stages on each day and distribute late stages.
+        //   3. Adjust day1Close / day2Open / day2Close for the specific time goals.
+        //   4. Run the test; feasible splits print times, plan files are saved to outputDir.
+        //
+        // Optimizer cost = total transit + wait minutes (stage drive time excluded).
+        // Close-time overrides force the optimizer to prune routes that exceed the target end time.
+        // -----------------------------------------------------------------
+
+        [TestMethod]
+        [Ignore]
+        public void Olympus2026_SunsetConstrainedAnalysis()
+        {
+            // Day 1 (Wed): start 10am, finish by 6:30pm for shakedown recce window (13:00–20:00).
+            // Day 2 (Thu): late start ~1pm, finish by 7pm due to sunset.
+            // User wants Dayton(1) + Mason Lake(4) on Day 2; distribute late stages (7,8,9) between days.
+            var olympusFile = @"C:\Users\ygles\OneDrive\Documents\_Rally\_2026\2-Olympus - Apr 17-19 2026\OlympusStages.md";
+            var outputDir = System.IO.Path.GetDirectoryName(olympusFile);
+
+            var day1Close  = new TimeSpan(18, 30, 0); // 6:30 pm
+            var day2Open   = new TimeSpan(13,  0, 0); // 1:00 pm
+            var day2Close  = new TimeSpan(19,  0, 0); // 7:00 pm
+
+            Rally MakeDay1(string[] codes)
+            {
+                var r = RallyParser.ParseFromFile(olympusFile);
+                r.WaitForInput = false;
+                r.Locations = r.Locations.Where(l => System.Array.IndexOf(codes, l.Code) >= 0).ToList();
+                foreach (var loc in r.Locations)
+                    loc.CloseTime = day1Close;
+                return r;
+            }
+
+            Rally MakeDay2(string[] codes)
+            {
+                var r = RallyParser.ParseFromFile(olympusFile);
+                r.WaitForInput = false;
+                r.Locations = r.Locations.Where(l => System.Array.IndexOf(codes, l.Code) >= 0).ToList();
+                foreach (var loc in r.Locations)
+                {
+                    if (loc.OpenTime.HasValue && loc.OpenTime.Value < day2Open)
+                        loc.OpenTime = day2Open;
+                    loc.CloseTime = day2Close;
+                }
+                return r;
+            }
+
+            // Day 2 always has Dayton(1) + Mason Lake(4); distribute late stages across days.
+            // Day 1 base = {2,3,5,6} + day1 late subset; Day 2 = {1,4} + day2 late subset.
+            var splits = new (string[] d1Late, string[] d2Late)[]
+            {
+                (new[]{"7","8","9"}, new string[0]),
+                (new[]{"7","8"},     new[]{"9"}),
+                (new[]{"7","9"},     new[]{"8"}),
+                (new[]{"8","9"},     new[]{"7"}),
+                (new[]{"7"},         new[]{"8","9"}),
+                (new[]{"8"},         new[]{"7","9"}),
+                (new[]{"9"},         new[]{"7","8"}),
+                (new string[0],      new[]{"7","8","9"}),
+            };
+
+            var results = new System.Text.StringBuilder();
+            results.AppendLine($"Day 1 close: 6:30 pm | Day 2 open: 1:00 pm | Day 2 close: 7:00 pm");
+            results.AppendLine($"Day 1 base: 2,3,5,6 + late subset | Day 2 base: 1,4 + late subset");
+            results.AppendLine();
+
+            int bestTotal = int.MaxValue;
+            string[] bestD1 = null, bestD2 = null;
+
+            foreach (var (d1Late, d2Late) in splits)
+            {
+                var d1Codes = new[]{"2","3","5","6"}.Concat(d1Late).ToArray();
+                var d2Codes = new[]{"1","4"}.Concat(d2Late).ToArray();
+                string label = $"D1=[{string.Join(",", d1Codes)}] D2=[{string.Join(",", d2Codes)}]";
+
+                var r1 = MakeDay1(d1Codes);
+                var r2 = MakeDay2(d2Codes);
+                RunSilently(r1);
+                RunSilently(r2);
+
+                bool ok = r1.OptimalRouteTime != int.MaxValue && r2.OptimalRouteTime != int.MaxValue;
+                if (ok)
+                {
+                    int total = r1.OptimalRouteTime + r2.OptimalRouteTime;
+                    results.AppendLine($"{label}  =>  D1={r1.OptimalRouteTime}min  D2={r2.OptimalRouteTime}min  Total={total}min");
+                    if (total < bestTotal) { bestTotal = total; bestD1 = d1Codes; bestD2 = d2Codes; }
+                }
+                else
+                {
+                    results.AppendLine($"{label}  =>  INFEASIBLE");
+                }
+            }
+
+            results.AppendLine();
+            if (bestD1 != null)
+                results.AppendLine($"BEST: D1=[{string.Join(",", bestD1)}] D2=[{string.Join(",", bestD2)}] Total={bestTotal}min");
+
+            System.IO.File.WriteAllText(System.IO.Path.Combine(outputDir, "split-analysis-sunset.txt"), results.ToString());
+
+            // Generate plans for all feasible splits so user can review schedules
+            int planNum = 1;
+            foreach (var (d1Late, d2Late) in splits)
+            {
+                var d1Codes = new[]{"2","3","5","6"}.Concat(d1Late).ToArray();
+                var d2Codes = new[]{"1","4"}.Concat(d2Late).ToArray();
+                var r1 = MakeDay1(d1Codes); RunSilently(r1);
+                var r2 = MakeDay2(d2Codes); RunSilently(r2);
+                if (r1.OptimalRoutes.Count == 0 || r2.OptimalRoutes.Count == 0) { planNum++; continue; }
+                r1.InputFilePath = olympusFile;
+                r2.InputFilePath = olympusFile;
+                r1.GenerateReccePlan(r1.OptimalRoutes.First().Value,
+                    System.IO.Path.Combine(outputDir, $"Sunset-Plan{planNum:D2}-Day1.md"));
+                r2.GenerateReccePlan(r2.OptimalRoutes.First().Value,
+                    System.IO.Path.Combine(outputDir, $"Sunset-Plan{planNum:D2}-Day2.md"));
+                planNum++;
+            }
+
+            Assert.Fail("Done.\n" + results);
+        }
+
+        [TestMethod]
+        public void Olympus2026_GenerateFinalPlan()
+        {
+            // Plan05: Day1={2,3,5,6,7} Day2={1,4,8,9}
+            // Day1 10am–5:43pm | Day2 1pm–6:55pm | Total transit 320 min
+            var olympusFile = @"C:\Users\ygles\OneDrive\Documents\_Rally\_2026\2-Olympus - Apr 17-19 2026\OlympusStages.md";
+            var outputDir = System.IO.Path.GetDirectoryName(olympusFile);
+            var day1Close = new TimeSpan(18, 30, 0);
+            var day2Open  = new TimeSpan(13, 0, 0);
+            var day2Close = new TimeSpan(19, 0, 0);
+
+            var r1 = RallyParser.ParseFromFile(olympusFile);
+            r1.WaitForInput = false;
+            r1.Locations = r1.Locations.Where(l => new[]{"2","3","5","6","7"}.Contains(l.Code)).ToList();
+            foreach (var loc in r1.Locations) loc.CloseTime = day1Close;
+            RunSilently(r1);
+            Assert.IsTrue(r1.OptimalRoutes.Count > 0);
+            r1.InputFilePath = olympusFile;
+            r1.GenerateReccePlan(r1.OptimalRoutes.First().Value,
+                System.IO.Path.Combine(outputDir, "Olympus2026-ReccePlan-Day1-WedApr15.md"));
+
+            var r2 = RallyParser.ParseFromFile(olympusFile);
+            r2.WaitForInput = false;
+            r2.Locations = r2.Locations.Where(l => new[]{"1","4","8","9"}.Contains(l.Code)).ToList();
+            foreach (var loc in r2.Locations)
+            {
+                if (loc.OpenTime.HasValue && loc.OpenTime.Value < day2Open) loc.OpenTime = day2Open;
+                loc.CloseTime = day2Close;
+            }
+            RunSilently(r2);
+            Assert.IsTrue(r2.OptimalRoutes.Count > 0);
+            r2.InputFilePath = olympusFile;
+            r2.GenerateReccePlan(r2.OptimalRoutes.First().Value,
+                System.IO.Path.Combine(outputDir, "Olympus2026-ReccePlan-Day2-ThuApr16.md"));
+        }
+
+        [TestMethod]
+        [Ignore]
+        public void Olympus2026_FullAnalysisAndGeneratePlans()
+        {
+            var olympusFile = @"C:\Users\ygles\OneDrive\Documents\_Rally\_2026\2-Olympus - Apr 17-19 2026\OlympusStages.md";
+            var outputDir = System.IO.Path.GetDirectoryName(olympusFile);
+
+            // Bulletin #3: both days now 10:00–20:00. Stages 7/8/9 still open at 15:00.
+            // Early stages already have 10am open times in the file — cap matches window start, no adjustment needed.
+            var day1WindowStart = new TimeSpan(10, 0, 0);
+            var day2WindowStart = new TimeSpan(10, 0, 0);
+
+            Rally MakeRally(string[] codes, TimeSpan windowStart)
+            {
+                var r = RallyParser.ParseFromFile(olympusFile);
+                r.WaitForInput = false;
+                r.Locations = r.Locations.Where(l => System.Array.IndexOf(codes, l.Code) >= 0).ToList();
+                foreach (var loc in r.Locations)
+                    if (loc.OpenTime.HasValue && loc.OpenTime.Value < windowStart)
+                        loc.OpenTime = windowStart;
+                return r;
+            }
+
+            var splits = new (string[] day1, string[] day2)[]
+            {
+                // --- Original 29 splits ---
+                (new[]{"1","5","7","8","9"}, new[]{"2","3","4","6"}),
+                (new[]{"2","3","4","6"},     new[]{"1","5","7","8","9"}),
+                (new[]{"1","2","3","4","5","6"}, new[]{"7","8","9"}),
+                (new[]{"1","2","3","6"},     new[]{"4","5","7","8","9"}),
+                (new[]{"2","3","6","7","8","9"}, new[]{"1","4","5"}),
+                (new[]{"1","4","5","7","8","9"}, new[]{"2","3","6"}),
+                (new[]{"1","2","3","4","6"}, new[]{"5","7","8","9"}),
+                (new[]{"5","7","8","9"},     new[]{"1","2","3","4","6"}),
+                (new[]{"1","2","3","6","7","8","9"}, new[]{"4","5"}),
+                (new[]{"1","4","5"},         new[]{"2","3","6","7","8","9"}),
+                (new[]{"2","3","4","5","6"}, new[]{"1","7","8","9"}),
+                (new[]{"1","7","8","9"},     new[]{"2","3","4","5","6"}),
+                (new[]{"4","5","7","8","9"}, new[]{"1","2","3","6"}),
+                (new[]{"1","2","3","4","6","7","8","9"}, new[]{"5"}),
+                (new[]{"1","5"},             new[]{"2","3","4","6","7","8","9"}),
+                (new[]{"2","5"},             new[]{"1","3","4","6","7","8","9"}),
+                (new[]{"3","5"},             new[]{"1","2","4","6","7","8","9"}),
+                (new[]{"4","5"},             new[]{"1","2","3","6","7","8","9"}),
+                (new[]{"5","6"},             new[]{"1","2","3","4","7","8","9"}),
+                (new[]{"5"},                 new[]{"1","2","3","4","6","7","8","9"}),
+                (new[]{"1","2","5"},         new[]{"3","4","6","7","8","9"}),
+                (new[]{"1","3","5"},         new[]{"2","4","6","7","8","9"}),
+                (new[]{"1","6","5"},         new[]{"2","3","4","7","8","9"}),
+                (new[]{"2","3","5"},         new[]{"1","4","6","7","8","9"}),
+                (new[]{"2","6","5"},         new[]{"1","3","4","7","8","9"}),
+                (new[]{"3","4","5"},         new[]{"1","2","6","7","8","9"}),
+                (new[]{"3","6","5"},         new[]{"1","2","4","7","8","9"}),
+                (new[]{"4","6","5"},         new[]{"1","2","3","7","8","9"}),
+                (new[]{"2","4","5"},         new[]{"1","3","6","7","8","9"}),
+                // --- New: Day2 has Stage5 + late stages (possible now both days start at 10am) ---
+                (new[]{"1","2","3","6"},     new[]{"4","5","7","8","9"}),
+                (new[]{"1","2","4","6"},     new[]{"3","5","7","8","9"}),
+                (new[]{"1","3","4","6"},     new[]{"2","5","7","8","9"}),
+                (new[]{"2","3","4","6"},     new[]{"1","5","7","8","9"}),  // duplicate but re-test with new window
+                (new[]{"1","2","6"},         new[]{"3","4","5","7","8","9"}),
+                (new[]{"1","3","6"},         new[]{"2","4","5","7","8","9"}),
+                (new[]{"1","4","6"},         new[]{"2","3","5","7","8","9"}),
+                (new[]{"2","3","6"},         new[]{"1","4","5","7","8","9"}),
+                (new[]{"2","4","6"},         new[]{"1","3","5","7","8","9"}),
+                (new[]{"3","4","6"},         new[]{"1","2","5","7","8","9"}),
+                (new[]{"1","6"},             new[]{"2","3","4","5","7","8","9"}),
+                (new[]{"2","6"},             new[]{"1","3","4","5","7","8","9"}),
+                (new[]{"3","6"},             new[]{"1","2","4","5","7","8","9"}),
+                (new[]{"4","6"},             new[]{"1","2","3","5","7","8","9"}),
+                (new[]{"1","2"},             new[]{"3","4","5","6","7","8","9"}),
+                (new[]{"1","3"},             new[]{"2","4","5","6","7","8","9"}),
+                (new[]{"1","4"},             new[]{"2","3","5","6","7","8","9"}),
+                (new[]{"2","3"},             new[]{"1","4","5","6","7","8","9"}),
+                (new[]{"2","4"},             new[]{"1","3","5","6","7","8","9"}),
+                (new[]{"3","4"},             new[]{"1","2","5","6","7","8","9"}),
+                (new[]{"1"},                 new[]{"2","3","4","5","6","7","8","9"}),
+                (new[]{"2"},                 new[]{"1","3","4","5","6","7","8","9"}),
+                (new[]{"3"},                 new[]{"1","2","4","5","6","7","8","9"}),
+                (new[]{"4"},                 new[]{"1","2","3","5","6","7","8","9"}),
+                (new[]{"6"},                 new[]{"1","2","3","4","5","7","8","9"}),
+            };
+
+            var results = new System.Text.StringBuilder();
+            int bestTotal = int.MaxValue;
+            string[] bestDay1 = null, bestDay2 = null;
+
+            foreach (var (d1Codes, d2Codes) in splits)
+            {
+                var r1 = MakeRally(d1Codes, day1WindowStart);
+                var r2 = MakeRally(d2Codes, day2WindowStart);
+                RunSilently(r1);
+                RunSilently(r2);
+
+                bool ok = r1.OptimalRouteTime != int.MaxValue && r2.OptimalRouteTime != int.MaxValue;
+                string label = $"D1=[{string.Join(",", d1Codes)}] D2=[{string.Join(",", d2Codes)}]";
+                if (ok)
+                {
+                    int total = r1.OptimalRouteTime + r2.OptimalRouteTime;
+                    results.AppendLine($"{label}  =>  D1={r1.OptimalRouteTime}min  D2={r2.OptimalRouteTime}min  Total={total}min");
+                    if (total < bestTotal) { bestTotal = total; bestDay1 = d1Codes; bestDay2 = d2Codes; }
+                }
+                else
+                {
+                    results.AppendLine($"{label}  =>  INFEASIBLE");
+                }
+            }
+
+            results.AppendLine($"\nBEST: D1=[{string.Join(",", bestDay1)}] D2=[{string.Join(",", bestDay2)}] Total={bestTotal}min");
+            System.IO.File.WriteAllText(System.IO.Path.Combine(outputDir, "split-analysis.txt"), results.ToString());
+
+            // Generate plans: best split + Option A (all early except Dayton) + Option B (all early)
+            void SavePlan(string[] codes, TimeSpan windowStart, string suffix)
+            {
+                var r = MakeRally(codes, windowStart);
+                RunSilently(r);
+                if (r.OptimalRoutes.Count == 0) return;
+                r.InputFilePath = olympusFile;
+                r.GenerateReccePlan(r.OptimalRoutes.First().Value,
+                    System.IO.Path.Combine(outputDir, $"Olympus2026-Recce-{suffix}.md"));
+            }
+
+            SavePlan(bestDay1, day1WindowStart, "Best-Day1");
+            SavePlan(bestDay2, day2WindowStart, "Best-Day2");
+            SavePlan(new[]{"2","3","4","5","6"}, day1WindowStart, "OptionA-Day1");
+            SavePlan(new[]{"1","7","8","9"},     day2WindowStart, "OptionA-Day2");
+            SavePlan(new[]{"1","2","3","4","5","6"}, day1WindowStart, "OptionB-Day1");
+            SavePlan(new[]{"7","8","9"},         day2WindowStart, "OptionB-Day2");
+
+            Assert.Fail("Done.\n" + results);
+        }
+
+        [TestMethod]
+        [Ignore] // Run manually only; takes ~20s and writes to OneDrive
+        public void Olympus2026_TwoDaySplitAnalysis()
+        {
+            var olympusFile = @"C:\Users\ygles\OneDrive\Documents\_Rally\_2026\2-Olympus - Apr 17-19 2026\OlympusStages.md";
+            var outputDir = System.IO.Path.GetDirectoryName(olympusFile);
+
+            // Day 1: Wed Apr 15, recce window 11am–8pm (stages 1-6 open 11am; 7-9 open 3pm)
+            // Day 2: Thu Apr 16, recce window 12pm–8pm (stages 1-6 effectively open 12pm on this day)
+            var splits = new (string[] day1, string[] day2)[]
+            {
+                // --- Round 1: broad survey ---
+                (new[]{"1","5","7","8","9"}, new[]{"2","3","4","6"}),           // A
+                (new[]{"2","3","4","6"},     new[]{"1","5","7","8","9"}),       // B
+                (new[]{"1","2","3","4","5","6"}, new[]{"7","8","9"}),           // C
+                (new[]{"1","2","3","6"},     new[]{"4","5","7","8","9"}),       // D
+                (new[]{"2","3","6","7","8","9"}, new[]{"1","4","5"}),           // E
+                (new[]{"1","4","5","7","8","9"}, new[]{"2","3","6"}),           // F
+                (new[]{"1","2","3","4","6"}, new[]{"5","7","8","9"}),           // G
+                (new[]{"5","7","8","9"},     new[]{"1","2","3","4","6"}),       // H
+                (new[]{"1","2","3","6","7","8","9"}, new[]{"4","5"}),           // I
+                (new[]{"1","4","5"},         new[]{"2","3","6","7","8","9"}),   // J ← current best
+                (new[]{"2","3","4","5","6"}, new[]{"1","7","8","9"}),           // K
+                (new[]{"1","7","8","9"},     new[]{"2","3","4","5","6"}),       // L
+                (new[]{"4","5","7","8","9"}, new[]{"1","2","3","6"}),           // M
+                (new[]{"1","2","3","4","6","7","8","9"}, new[]{"5"}),           // N
+                // --- Round 2: Stage 5 on Day1 with only 1 other early stage ---
+                (new[]{"1","5"},             new[]{"2","3","4","6","7","8","9"}), // O
+                (new[]{"2","5"},             new[]{"1","3","4","6","7","8","9"}), // P
+                (new[]{"3","5"},             new[]{"1","2","4","6","7","8","9"}), // Q
+                (new[]{"4","5"},             new[]{"1","2","3","6","7","8","9"}), // R
+                (new[]{"5","6"},             new[]{"1","2","3","4","7","8","9"}), // S
+                // --- Round 3: Stage 5 on Day1 alone ---
+                (new[]{"5"},                 new[]{"1","2","3","4","6","7","8","9"}), // T
+                // --- Round 4: Stage 5 on Day1 with 2 other early stages ---
+                (new[]{"1","2","5"},         new[]{"3","4","6","7","8","9"}),   // U
+                (new[]{"1","3","5"},         new[]{"2","4","6","7","8","9"}),   // V
+                (new[]{"1","6","5"},         new[]{"2","3","4","7","8","9"}),   // W
+                (new[]{"2","3","5"},         new[]{"1","4","6","7","8","9"}),   // X
+                (new[]{"2","6","5"},         new[]{"1","3","4","7","8","9"}),   // Y
+                (new[]{"3","4","5"},         new[]{"1","2","6","7","8","9"}),   // Z
+                (new[]{"3","6","5"},         new[]{"1","2","4","7","8","9"}),   // AA
+                (new[]{"4","6","5"},         new[]{"1","2","3","7","8","9"}),   // AB
+                (new[]{"2","4","5"},         new[]{"1","3","6","7","8","9"}),   // AC
+            };
+
+            var results = new System.Text.StringBuilder();
+            int bestTotal = int.MaxValue;
+            int bestDay1Time = 0, bestDay2Time = 0;
+            string[] bestDay1Codes = null, bestDay2Codes = null;
+
+            foreach (var (day1Codes, day2Codes) in splits)
+            {
+                string label = $"D1=[{string.Join(",", day1Codes)}] D2=[{string.Join(",", day2Codes)}]";
+
+                var day1 = RallyParser.ParseFromFile(olympusFile);
+                day1.WaitForInput = false;
+                day1.Locations = day1.Locations.Where(l => System.Array.IndexOf(day1Codes, l.Code) >= 0).ToList();
+
+                var day2 = RallyParser.ParseFromFile(olympusFile);
+                day2.WaitForInput = false;
+                day2.Locations = day2.Locations.Where(l => System.Array.IndexOf(day2Codes, l.Code) >= 0).ToList();
+                // Adjust early open times (11am) to 12pm for Day 2 since recce can't start before noon
+                foreach (var loc in day2.Locations)
+                {
+                    if (loc.OpenTime.HasValue && loc.OpenTime.Value < new TimeSpan(12, 0, 0))
+                        loc.OpenTime = new TimeSpan(12, 0, 0);
+                }
+
+                RunSilently(day1);
+                RunSilently(day2);
+
+                bool day1Valid = day1.OptimalRouteTime != int.MaxValue;
+                bool day2Valid = day2.OptimalRouteTime != int.MaxValue;
+
+                if (day1Valid && day2Valid)
+                {
+                    int total = day1.OptimalRouteTime + day2.OptimalRouteTime;
+                    results.AppendLine($"{label}  =>  Day1={day1.OptimalRouteTime}min  Day2={day2.OptimalRouteTime}min  Total={total}min");
+
+                    if (total < bestTotal)
+                    {
+                        bestTotal = total;
+                        bestDay1Time = day1.OptimalRouteTime;
+                        bestDay2Time = day2.OptimalRouteTime;
+                        bestDay1Codes = day1Codes;
+                        bestDay2Codes = day2Codes;
+                    }
+                }
+                else
+                {
+                    results.AppendLine($"{label}  =>  INFEASIBLE (Day1={day1.OptimalRouteTime} Day2={day2.OptimalRouteTime})");
+                }
+            }
+
+            results.AppendLine();
+            if (bestDay1Codes != null)
+            {
+                results.AppendLine($"BEST SPLIT: D1=[{string.Join(",", bestDay1Codes)}] D2=[{string.Join(",", bestDay2Codes)}]");
+                results.AppendLine($"  Day1={bestDay1Time}min  Day2={bestDay2Time}min  Total={bestTotal}min");
+            }
+            else
+            {
+                results.AppendLine("No feasible split found.");
+            }
+
+            // Write results to file before plan generation
+            System.IO.File.WriteAllText(System.IO.Path.Combine(outputDir, "split-analysis.txt"), results.ToString());
+
+            // Generate plans for the best split
+            if (bestDay1Codes != null)
+            {
+                void GenerateBestPlan(string[] codes, string daySuffix, bool isDay2)
+                {
+                    var rally = RallyParser.ParseFromFile(olympusFile);
+                    rally.WaitForInput = false;
+                    rally.Locations = rally.Locations.Where(l => System.Array.IndexOf(codes, l.Code) >= 0).ToList();
+                    if (isDay2)
+                    {
+                        foreach (var loc in rally.Locations)
+                            if (loc.OpenTime.HasValue && loc.OpenTime.Value < new TimeSpan(12, 0, 0))
+                                loc.OpenTime = new TimeSpan(12, 0, 0);
+                    }
+                    RunSilently(rally);
+                    if (rally.OptimalRoutes.Count == 0)
+                    {
+                        results.AppendLine($"WARNING: No routes found for {daySuffix} during plan generation.");
+                        return;
+                    }
+                    var route = rally.OptimalRoutes.First().Value;
+                    var planPath = System.IO.Path.Combine(outputDir, $"Olympus2026-Recce-{daySuffix}.md");
+                    rally.InputFilePath = olympusFile;
+                    rally.GenerateReccePlan(route, planPath);
+                    results.AppendLine($"Plan saved: {planPath}");
+                }
+
+                GenerateBestPlan(bestDay1Codes, "Day1-WedApr15", false);
+                GenerateBestPlan(bestDay2Codes, "Day2-ThuApr16", true);
+            }
+
+            System.IO.File.WriteAllText(System.IO.Path.Combine(outputDir, "split-analysis.txt"), results.ToString());
+            Assert.Fail("Analysis complete.\n" + results);
+        }
+
         [TestMethod]
         public void GenerateReccePlan_StageDurationRoundedUp()
         {

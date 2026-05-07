@@ -12,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\ReccePlanner.csproj" />
+    <ProjectReference Include="..\..\src\ReccePlanner.Console\ReccePlanner.csproj" />
   </ItemGroup>
 
   <ItemGroup>

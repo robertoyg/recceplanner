@@ -5,7 +5,7 @@ using System.Linq;
 
 namespace ReccePlanner
 {
-    internal static class RallyParser
+    public static class RallyParser
     {
         public static Rally ParseFromFile(string filePath)
         {
@@ -18,7 +18,13 @@ namespace ReccePlanner
             return Parse(lines);
         }
 
-        private static Rally Parse(string[] lines)
+        public static Rally ParseFromString(string content)
+        {
+            var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            return Parse(lines);
+        }
+
+        internal static Rally Parse(string[] lines)
         {
             var rally = new Rally();
             var locations = new Dictionary<string, Location>();

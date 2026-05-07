@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: src/ReccePlanner.McpServer/Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    healthcheck:
+      test: ["CMD", "curl", "--max-time", "2", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  agent-api:
+    build:
+      context: src/ReccePlanner.AgentApi
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MCP_SERVER_URL=http://mcp-server:5000
+      - CLAUDE_MODEL=claude-sonnet-4-6
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    volumes:
+      # Mount source for hot-reload during development
+      - ./src/ReccePlanner.AgentApi:/app
