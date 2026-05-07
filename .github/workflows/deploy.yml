@@ -1,0 +1,249 @@
+# =============================================================================
+# ReccePlanner — CI/CD Deployment Pipeline
+# =============================================================================
+#
+# REQUIRED GITHUB SECRETS
+# ─────────────────────────────────────────────────────────────────────────────
+# Set these under: GitHub repo → Settings → Secrets and variables → Actions
+#
+# 1. AZURE_CREDENTIALS
+#    JSON service principal credentials. Generate with:
+#
+#      az ad sp create-for-rbac \
+#        --name "recceplanner-github-actions" \
+#        --role Contributor \
+#        --scopes /subscriptions/9b95613f-a4d0-4cab-93ac-5004db7186d2/resourceGroups/ReccePlanner \
+#        --sdk-auth
+#
+#    Copy the full JSON output as the secret value. It looks like:
+#      {
+#        "clientId": "...",
+#        "clientSecret": "...",
+#        "subscriptionId": "9b95613f-a4d0-4cab-93ac-5004db7186d2",
+#        "tenantId": "...",
+#        ...
+#      }
+#
+# 2. AZURE_STATIC_WEB_APPS_API_TOKEN
+#    Deployment token for the recceplanner-web Static Web App.
+#    Find it in: Azure Portal → recceplanner-web → Settings →
+#    "Manage deployment token" → copy the token value.
+#
+# 3. ANTHROPIC_API_KEY
+#    Anthropic API key used by the Agent API container.
+#    NOTE: This secret is NOT passed directly to the deployed containers here —
+#    it is set as a Container App secret via Bicep or `az containerapp secret`.
+#    It is listed here only in case you want to run smoke tests (test_pipeline.py)
+#    as a post-deploy CI step in the future.
+#
+# =============================================================================
+
+name: Deploy ReccePlanner
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:   # Allow manual trigger from GitHub Actions UI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workflow-level environment variables — edit here to change resource names
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  AZURE_SUBSCRIPTION_ID: 9b95613f-a4d0-4cab-93ac-5004db7186d2
+  AZURE_RESOURCE_GROUP: ReccePlanner
+  ACR_LOGIN_SERVER: recceplanneracr.azurecr.io
+  ACR_NAME: recceplanneracr
+  MCP_APP_NAME: recceplanner-mcp
+  AGENT_APP_NAME: recceplanner-agent
+  STATIC_WEB_APP_NAME: recceplanner-web
+  MCP_IMAGE: recceplanneracr.azurecr.io/recceplanner-mcp
+  AGENT_IMAGE: recceplanneracr.azurecr.io/recceplanner-agent
+
+# =============================================================================
+# JOB 1 — Run .NET tests
+# =============================================================================
+jobs:
+  test:
+    name: Run Tests
+    runs-on: windows-latest  # ReccePlannerTests targets net4.8 (Windows-only framework)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      # Run the full NUnit test suite.
+      # NOTE: Python smoke tests (src/ReccePlanner.AgentApi/test_pipeline.py)
+      # require live Azure services (MCP server + Agent API) to be running, so
+      # they are intentionally NOT run here. Execute them manually post-deploy.
+      - name: Run .NET tests
+        run: dotnet test tests/ReccePlannerTests/ReccePlannerTests.csproj --verbosity normal
+
+  # ===========================================================================
+  # JOB 2 — Build Docker images and push to Azure Container Registry
+  # ===========================================================================
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: test   # Only run if tests pass
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      # ── MCP Server image ────────────────────────────────────────────────────
+      # Build context is the repo root because the Dockerfile references the
+      # sibling Core project (src/ReccePlanner.Core) via relative COPY paths.
+      - name: Build MCP Server image
+        run: |
+          docker build \
+            --file src/ReccePlanner.McpServer/Dockerfile \
+            --tag ${{ env.MCP_IMAGE }}:${{ github.sha }} \
+            --tag ${{ env.MCP_IMAGE }}:latest \
+            .
+
+      - name: Push MCP Server image
+        run: |
+          docker push ${{ env.MCP_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.MCP_IMAGE }}:latest
+
+      # ── Agent API image ─────────────────────────────────────────────────────
+      # Build context is the AgentApi directory; the Dockerfile only needs files
+      # within that folder (Python app + requirements.txt).
+      - name: Build Agent API image
+        run: |
+          docker build \
+            --file src/ReccePlanner.AgentApi/Dockerfile \
+            --tag ${{ env.AGENT_IMAGE }}:${{ github.sha }} \
+            --tag ${{ env.AGENT_IMAGE }}:latest \
+            src/ReccePlanner.AgentApi
+
+      - name: Push Agent API image
+        run: |
+          docker push ${{ env.AGENT_IMAGE }}:${{ github.sha }}
+          docker push ${{ env.AGENT_IMAGE }}:latest
+
+  # ===========================================================================
+  # JOB 3 — Deploy containers to Azure Container Apps
+  # ===========================================================================
+  deploy-backend:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Update the MCP server Container App to the new image.
+      # The Container App must already exist (provisioned via Bicep separately).
+      - name: Deploy MCP Server Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.MCP_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.MCP_IMAGE }}:${{ github.sha }}
+
+      # Update the Agent API Container App to the new image.
+      - name: Deploy Agent API Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.AGENT_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.AGENT_IMAGE }}:${{ github.sha }}
+
+      # Echo the Agent API public URL for reference (useful in logs / post-deploy checks).
+      - name: Echo Agent API URL
+        run: |
+          AGENT_FQDN=$(az containerapp show \
+            --name ${{ env.AGENT_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv)
+          echo "Agent API is live at: https://$AGENT_FQDN"
+
+  # ===========================================================================
+  # JOB 4 — Build React app and deploy to Azure Static Web Apps
+  # ===========================================================================
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    needs: deploy-backend   # Wait for backend so the FQDN is stable
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Retrieve the Agent API FQDN so Vite can bake the API URL into the
+      # React bundle at build time via the VITE_API_URL environment variable.
+      - name: Resolve Agent API URL
+        run: |
+          AGENT_FQDN=$(az containerapp show \
+            --name ${{ env.AGENT_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv)
+          echo "VITE_API_URL=https://$AGENT_FQDN" >> $GITHUB_ENV
+          echo "Resolved VITE_API_URL=https://$AGENT_FQDN"
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/ReccePlanner.Web/package-lock.json
+
+      # Build the React/Vite app with the resolved API URL injected.
+      # We build manually here (rather than delegating to the SWA action) so we
+      # can pass VITE_API_URL as an environment variable at build time.
+      # skip_app_build: true below tells the SWA action to upload the pre-built
+      # dist/ folder directly.
+      - name: Install dependencies and build React app
+        working-directory: src/ReccePlanner.Web
+        run: |
+          npm ci
+          VITE_API_URL=${{ env.VITE_API_URL }} npm run build
+
+      # Deploy the pre-built dist/ folder to Azure Static Web Apps.
+      - name: Deploy to Azure Static Web Apps
+        uses: azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: src/ReccePlanner.Web
+          output_location: dist
+          skip_app_build: true   # We built above; skip the action's own build step
+
+      # Now that the SWA URL is known, tighten CORS on the Agent API to allow
+      # only the SWA hostname (replaces the wildcard set by Bicep on first deploy).
+      - name: Lock down CORS to SWA hostname
+        run: |
+          SWA_HOSTNAME=$(az staticwebapp show \
+            --name ${{ env.STATIC_WEB_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --query "defaultHostname" --output tsv)
+          az containerapp update \
+            --name ${{ env.AGENT_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --set-env-vars "CORS_ORIGINS=https://$SWA_HOSTNAME"

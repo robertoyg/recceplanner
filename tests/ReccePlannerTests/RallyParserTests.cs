@@ -341,7 +341,7 @@ namespace ReccePlannerTests
         {
             var templatePath = Path.Combine(
                 Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                "..", "..", "..", "..", "Input-template.md");
+                "..", "..", "..", "..", "..", "src", "ReccePlanner.Console", "Input-template.md");
 
             if (!File.Exists(templatePath))
                 Assert.Inconclusive("Input-template.md not found at expected path: " + templatePath);
@@ -918,7 +918,7 @@ namespace ReccePlannerTests
         {
             var templatePath = Path.Combine(
                 Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                "..", "..", "..", "..", "Input-template.md");
+                "..", "..", "..", "..", "..", "src", "ReccePlanner.Console", "Input-template.md");
 
             if (!File.Exists(templatePath))
                 Assert.Inconclusive("Input-template.md not found at expected path: " + templatePath);
