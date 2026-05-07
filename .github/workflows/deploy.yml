@@ -152,22 +152,37 @@ jobs:
             --tenant ${{ secrets.AZURE_TENANT_ID }}
           az account set --subscription ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      # Update the MCP server Container App to the new image.
-      # The Container App must already exist (provisioned via Bicep separately).
+      # Wire ACR credentials into the Container Apps environment on first deploy,
+      # then update both apps to the new image SHA.
       - name: Deploy MCP Server Container App
         run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          az containerapp registry set \
+            --name ${{ env.MCP_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --server ${{ env.ACR_LOGIN_SERVER }} \
+            --username ${{ env.ACR_NAME }} \
+            --password "$ACR_PASSWORD"
           az containerapp update \
             --name ${{ env.MCP_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.MCP_IMAGE }}:${{ github.sha }}
+            --image ${{ env.MCP_IMAGE }}:${{ github.sha }} \
+            --ingress internal --target-port 5000
 
-      # Update the Agent API Container App to the new image.
       - name: Deploy Agent API Container App
         run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          az containerapp registry set \
+            --name ${{ env.AGENT_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --server ${{ env.ACR_LOGIN_SERVER }} \
+            --username ${{ env.ACR_NAME }} \
+            --password "$ACR_PASSWORD"
           az containerapp update \
             --name ${{ env.AGENT_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.AGENT_IMAGE }}:${{ github.sha }}
+            --image ${{ env.AGENT_IMAGE }}:${{ github.sha }} \
+            --ingress external --target-port 8000
 
       # Echo the Agent API public URL for reference (useful in logs / post-deploy checks).
       - name: Echo Agent API URL
