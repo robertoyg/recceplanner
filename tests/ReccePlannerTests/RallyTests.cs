@@ -806,6 +806,7 @@ namespace ReccePlannerTests
         }
 
         [TestMethod]
+        [Ignore("Reads from a local file path — run manually on dev machine only")]
         public void Olympus2026_GenerateFinalPlan()
         {
             // Plan05: Day1={2,3,5,6,7} Day2={1,4,8,9}
