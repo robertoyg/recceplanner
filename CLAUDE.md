@@ -127,35 +127,71 @@ Run: `dotnet run --project src/ReccePlanner.McpServer` (port 5000)
 | `Models.cs` | `RallyData`, `SplitSpec`, `SplitResult`, `OptimizationResult`, `ValidationResult` |
 | `Dockerfile` | Multi-stage build for Azure Container Apps |
 
-**MCP Tools (PascalCase as registered by the SDK):**
-| Tool | Purpose |
+**MCP Tools — registered with snake_case names via `[McpServerTool(Name = "...")]`:**
+| Tool (snake_case) | Purpose |
 |---|---|
-| `ParseRallyMarkdown` | Parse markdown → structured `RallyData` (call first) |
-| `ValidateTravelTimes` | Check matrix completeness and symmetry (call before optimizing) |
-| `OptimizeRecce` | Run DFS+B&B optimizer; supports stage subset + time overrides |
-| `AnalyzeTwoDaySplit` | Evaluate multiple 2-day splits in one call, ranked by total time |
-| `GenerateReccePlan` | Generate timed Markdown schedule from a route |
+| `parse_rally_markdown` | Parse markdown → structured `RallyData` (always call first) |
+| `validate_travel_times` | Check matrix completeness and symmetry (call before optimizing) |
+| `optimize_recce` | Run DFS+B&B optimizer; supports stage subset + time overrides |
+| `analyze_two_day_split` | Evaluate multiple 2-day splits in one call, ranked by total time |
+| `generate_recce_plan` | Generate timed Markdown schedule from a route |
+
+**Critical:** `TimeOverride` fields are `code`/`time` (lowercase) enforced via `[JsonPropertyName]`.
 
 ### Agent API (`src/ReccePlanner.AgentApi/` — Python FastAPI)
 Claude-powered agent that drives the optimizer via MCP tool calls. Streams responses via SSE.
-Run: `uvicorn main:app --reload` from `src/ReccePlanner.AgentApi/` (port 8000)
+Run: `uvicorn main:app` from `src/ReccePlanner.AgentApi/` (port 8000). Use `--reload` for dev only.
 
 | File | Role |
 |---|---|
 | `main.py` | FastAPI app — session management, SSE streaming endpoint, PDF upload |
 | `agent.py` | `RecceAgent` — Claude tool-use loop, streams events to client |
-| `mcp_client.py` | HTTP client for MCP server — maps snake_case tool names to PascalCase, parses SSE |
-| `pdf_extractor.py` | Claude vision PDF extraction → ReccePlanner markdown |
+| `mcp_client.py` | MCP Python SDK client — `streamablehttp_client` + `ClientSession` |
+| `pdf_extractor.py` | Claude vision PDF extraction via PyMuPDF (no external deps) → markdown |
 | `system_prompt.md` | Claude system prompt for the recce planning agent |
 | `test_pipeline.py` | End-to-end smoke test for MCP tools + agent API |
-| `requirements.txt` | Python dependencies |
-| `Dockerfile` | Container image for Azure Container Apps |
+| `requirements.txt` | Python dependencies (pymupdf, mcp, anthropic, fastapi, pytest…) |
+| `Dockerfile` | Production image — no `--reload`, `--workers 1` |
+| `evals/judge.py` | LLM-as-judge infrastructure (uses claude-haiku-4-5, returns scored `EvalResult`) |
+| `evals/conftest.py` | Shared pytest fixtures for evals |
+| `evals/test_agent_behavior.py` | 5 behavioral evals: missing TT, preferences, end-to-end, off-topic, incomplete TT |
 
-### Test project (`tests/ReccePlannerTests/` — net10.0)
+**PDF upload flow:**
+1. `extract_from_pdf()` — PyMuPDF converts pages to JPEG; Claude vision extracts structured data
+2. `build_markdown_from_extraction()` — converts structured dict → ReccePlanner markdown format
+3. `_build_upload_message()` — includes the pre-built markdown in the agent's user message so the agent passes it directly to `parse_rally_markdown` (never reconstructs it from the human-readable table)
+
+**Environment variables:**
+| Var | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | required | Anthropic API key |
+| `MCP_SERVER_URL` | `http://localhost:5000` | MCP server URL |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model for agent turns |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed origins (set to SWA hostname in prod) |
+
+### React Frontend (`src/ReccePlanner.Web/` — Vite + React 18)
+Run: `npm run dev` (port 5173, proxies `/sessions` and `/health` to port 8000).
+Build: `VITE_API_URL=https://... npm run build` — bakes API URL in at build time.
+
+| File | Role |
+|---|---|
+| `src/App.jsx` | Full app — UploadZone, FileBar, Message components, SSE streaming |
+| `src/index.css` | Teal accent theme, markdown table styles, spinner animation |
+| `public/logo.png` | Pura Vida Rally Team logo (shown in header) |
+| `vite.config.js` | Dev proxy for `/sessions` and `/health` |
+
+**Drag-and-drop notes:** Uses `dragEnter`/`dragLeave` counter (not raw events) to avoid child-element flicker. Global `dragover`/`drop` prevention stops browser navigating to dropped files. Shows immediate extraction feedback message (Claude vision takes ~30-60s).
+
+### Test project (`tests/ReccePlannerTests/` — net48 targeting .NET Framework 4.8)
+⚠️ Targets .NET Framework 4.8 — runs on Windows only. CI uses `windows-latest` runner.
 | File | Role |
 |---|---|
 | `RallyParserTests.cs` | Tests for Markdown parsing logic |
-| `RallyTests.cs` | Tests for optimization algorithm and plan generation |
+| `RallyTests.cs` | Tests for optimization algorithm, plan generation, and two-day analysis |
+
+**Running tests:** `dotnet test tests/ReccePlannerTests/ReccePlannerTests.csproj`
+**Running smoke tests:** `python test_pipeline.py` from `src/ReccePlanner.AgentApi/` (requires live services)
+**Running evals:** `pytest -m eval -v` from `src/ReccePlanner.AgentApi/evals/` (requires live services, costs API credits)
 
 ---
 
@@ -195,9 +231,47 @@ foreach (var loc in r.Locations) {
 
 ---
 
+## Azure Deployment
+
+Infrastructure provisioned via `infra/main.bicep` into resource group `ReccePlanner` (West US 2, subscription `9b95613f-a4d0-4cab-93ac-5004db7186d2`).
+
+| Resource | Name | Notes |
+|---|---|---|
+| Container Registry | `recceplanneracr` | `recceplanneracr.azurecr.io` |
+| Container Apps Env | `recceplanner-env` | Linked to Log Analytics `recceplanner-logs` |
+| MCP Container App | `recceplanner-mcp` | Internal ingress only (port 5000), 0.5 CPU / 1Gi |
+| Agent Container App | `recceplanner-agent` | External ingress (port 8000), 1 CPU / 2Gi |
+| Static Web App | `recceplanner-web` | Free tier; CI deploys pre-built `dist/` |
+
+**Live URLs (post first deploy):**
+- Frontend: `https://jolly-bush-07122fe1e.7.azurestaticapps.net`
+- Agent API: `https://recceplanner-agent.livelyrock-e141f153.westus2.azurecontainerapps.io`
+
+**Re-deploying infrastructure:**
+```bash
+az deployment group create \
+  --resource-group ReccePlanner \
+  --template-file infra/main.bicep \
+  --parameters infra/main.bicepparam \
+  --parameters anthropicApiKey="$ANTHROPIC_API_KEY"
+```
+⚠️ `anthropicApiKey` is a `@secure()` parameter — never commit a real value to `main.bicepparam`.
+
+**GitHub Actions secrets required:**
+- `AZURE_CREDENTIALS` — JSON from `az ad sp create-for-rbac --sdk-auth` (Contributor on ReccePlanner RG)
+- `AZURE_STATIC_WEB_APPS_API_TOKEN` — from `az staticwebapp secrets list --name recceplanner-web ...`
+
+**CI/CD pipeline (`.github/workflows/deploy.yml`):**
+Push to `main` → test (windows-latest) → build+push Docker images → deploy Container Apps → build React with `VITE_API_URL` → deploy SWA → lock CORS to SWA hostname.
+
+---
+
 ## Known Limitations / Notes
 
 - Visit count of 2 per stage is hardcoded (not configurable).
 - `House` location and `HouseTravelTimes` are defined but currently unused.
 - `[InternalsVisibleTo("ReccePlannerTests")]` exposes internals for testing.
 - `WaitForInput` property lets tests skip console pauses.
+- Agent API sessions are in-memory — a replica restart loses active sessions. Acceptable for single-replica; replace with Redis for multi-replica scaling.
+- Bicep deploys placeholder images on first run; GitHub Actions replaces them on first push to `main`.
+- `CORS_ORIGINS` is set to `*` by Bicep; the deploy pipeline locks it to the SWA hostname after each frontend deploy.
