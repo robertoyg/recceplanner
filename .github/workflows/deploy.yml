@@ -273,9 +273,8 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: upload
-          app_location: src/ReccePlanner.Web
-          output_location: dist
-          skip_app_build: true   # We built above; skip the action's own build step
+          app_location: src/ReccePlanner.Web/dist   # point directly at pre-built output
+          skip_app_build: true
 
       # Now that the SWA URL is known, tighten CORS on the Agent API to allow
       # only the SWA hostname (replaces the wildcard set by Bicep on first deploy).
