@@ -257,12 +257,22 @@ az deployment group create \
 ```
 ⚠️ `anthropicApiKey` is a `@secure()` parameter — never commit a real value to `main.bicepparam`.
 
-**GitHub Actions secrets required:**
-- `AZURE_CREDENTIALS` — JSON from `az ad sp create-for-rbac --sdk-auth` (Contributor on ReccePlanner RG)
-- `AZURE_STATIC_WEB_APPS_API_TOKEN` — from `az staticwebapp secrets list --name recceplanner-web ...`
+**GitHub Actions secrets required (all 4 must be set):**
+- `AZURE_CLIENT_ID` — service principal appId: `az ad sp list --display-name "recceplanner-github" --query "[0].appId" -o tsv`
+- `AZURE_CLIENT_SECRET` — service principal password: `az ad app credential reset --id <appId> --query "password" -o tsv`
+- `AZURE_TENANT_ID` — `az account show --query "tenantId" -o tsv`
+- `AZURE_STATIC_WEB_APPS_API_TOKEN` — `az staticwebapp secrets list --name recceplanner-web --resource-group ReccePlanner --query "properties.apiKey" -o tsv`
+
+⚠️ Do NOT use `azure/login@v1` or `@v2` with a JSON blob — `--sdk-auth` is deprecated and the action's JSON parsing is unreliable. The workflow uses `az login --service-principal` directly with individual secrets.
 
 **CI/CD pipeline (`.github/workflows/deploy.yml`):**
-Push to `main` → test (windows-latest) → build+push Docker images → deploy Container Apps → build React with `VITE_API_URL` → deploy SWA → lock CORS to SWA hostname.
+Push to `main` → test (windows-latest) → build+push Docker images → `az containerapp registry set` + update image → `az containerapp ingress update --target-port` → build React with `VITE_API_URL` → deploy SWA (`app_location: src/ReccePlanner.Web/dist`) → lock CORS to SWA hostname.
+
+**Critical first-deploy gotchas (already resolved, document for future):**
+- Bicep deploys placeholder `mcr.microsoft.com/azuredocs/containerapps-helloworld:latest` images which listen on port 80; the real apps need ports 5000/8000. Bicep now sets correct ports, and the deploy workflow runs `az containerapp ingress update` on every deploy.
+- `anthropic-key` secret must be mapped to `ANTHROPIC_API_KEY` env var explicitly — storing the secret alone is not enough. Set via: `az containerapp update --set-env-vars "ANTHROPIC_API_KEY=secretref:anthropic-key"`
+- `az containerapp registry set` must be called before the first `az containerapp update` to wire ACR credentials.
+- SWA deploy action: use `app_location: src/ReccePlanner.Web/dist` (not `app_location: src/ReccePlanner.Web` + `output_location: dist`) — the latter deploys source files instead of built output.
 
 ---
 
